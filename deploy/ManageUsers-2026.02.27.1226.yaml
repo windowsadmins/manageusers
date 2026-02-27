@@ -1,0 +1,51 @@
+name: ManageUsers
+display_name: ManageUsers
+version: 2026.02.27.1226
+catalogs:
+  - Development
+category: Management
+description: Manages local user accounts on shared Windows devices by removing inactive accounts based on area/room deletion policies, end-of-term forced deletion, and creation/login-based strategies.
+developer: EmilyCarrU
+installcheck_script: |
+  $ErrorActionPreference = 'SilentlyContinue'
+  $binaryPath = 'C:\ProgramData\Management\Scripts\manageusers.exe'
+  $taskName = 'WinAdmins-ManageUsers'
+
+  # Check if binary exists
+  if (!(Test-Path $binaryPath)) {
+      Write-Host "manageusers.exe not found - installation needed"
+      exit 0
+  }
+
+  # Check if scheduled task exists
+  $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+  if (!$task) {
+      Write-Host "Scheduled task not found - installation needed"
+      exit 0
+  }
+
+  # Check binary version matches package version
+  $versionOutput = & $binaryPath --version 2>&1
+  if ($versionOutput -match '(\d{4}\.\d{2}\.\d{2}\.\d{4})') {
+      $installedVersion = $matches[1]
+      if ($installedVersion -ne '2026.02.27.1226') {
+          Write-Host "Version mismatch (installed: $installedVersion, expected: 2026.02.27.1226) - installation needed"
+          exit 0
+      }
+  } else {
+      Write-Host "Could not determine installed version - installation needed"
+      exit 0
+  }
+
+  Write-Host "ManageUsers is installed and up to date"
+  exit 1
+installer:
+  type: pkg
+  size: 15
+  location: \mgmt\ManageUsers-2026.02.27.1226.pkg
+  hash: PLACEHOLDER_HASH_AFTER_BUILD
+supported_architectures:
+  - x64
+  - arm64
+unattended_install: true
+unattended_uninstall: false

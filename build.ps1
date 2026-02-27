@@ -1,35 +1,27 @@
-#Requires -Version 7.0
-<#
-.SYNOPSIS
-    Builds the ManageUsers binary with enterprise code signing.
+#!/usr/bin/env pwsh
+# ManageUsers Build Script
+# Builds, signs, and optionally deploys ManageUsers binary to Cimian payload
+#
+# Examples:
+#   .\build.ps1                          # Build + sign for both architectures (default)
+#   .\build.ps1 -Thumbprint "ABC123..."  # Build with specific certificate
+#   .\build.ps1 -AllowUnsigned           # Development build without signing (NOT for production)
+#   .\build.ps1 -Architecture arm64      # Build single architecture
+#   .\build.ps1 -Deploy                  # Build, sign, and copy to Cimian payload directory
+#   .\build.ps1 -ListCerts               # List available code signing certificates
+#   .\build.ps1 -Clean                   # Clean build output first
 
-.DESCRIPTION
-    Builds the .NET ManageUsers console application as a self-contained single-file executable for
-    x64 and arm64, then signs with the enterprise certificate.
-
-.PARAMETER Sign
-    Sign binaries with code signing certificate.
-
-.PARAMETER Architecture
-    Target architecture: x64, arm64, or both (default: both).
-
-.PARAMETER Clean
-    Clean build output before building.
-
-.EXAMPLE
-    .\build.ps1 -Sign
-    # Build and sign for both architectures
-
-.EXAMPLE
-    .\build.ps1 -Sign -Architecture arm64
-    # Build and sign arm64 only
-#>
-
+[CmdletBinding()]
 param(
-    [switch]$Sign,
+    [string]$Thumbprint,
     [ValidateSet('x64', 'arm64', 'both')]
     [string]$Architecture = 'both',
-    [switch]$Clean
+    [switch]$Clean,
+    [switch]$AllowUnsigned,
+    [switch]$ListCerts,
+    [string]$FindCertSubject,
+    [switch]$Deploy,
+    [string]$CimianPayloadPath
 )
 
 $ErrorActionPreference = 'Stop'
@@ -37,86 +29,281 @@ $RootDir = $PSScriptRoot
 $ProjectPath = Join-Path $RootDir 'src' 'ManageUsers' 'ManageUsers.csproj'
 $OutputDir = Join-Path $RootDir 'release'
 $Configuration = 'Release'
+$TimeStampServer = 'http://timestamp.digicert.com'
 
 # Timestamp-based versioning
-$version = Get-Date -Format 'yyyy.MM.dd.HHmm'
+$Version = Get-Date -Format 'yyyy.MM.dd.HHmm'
 
-function Write-BuildLog {
-    param([string]$Message, [string]$Level = 'INFO')
+# --- Certificate management functions ---
+
+function Find-CodeSigningCerts {
+    param([string]$SubjectFilter = '')
+
+    $certs = @()
+    $stores = @('Cert:\CurrentUser\My', 'Cert:\LocalMachine\My')
+
+    foreach ($store in $stores) {
+        $storeCerts = Get-ChildItem $store -ErrorAction SilentlyContinue | Where-Object {
+            ($_.EnhancedKeyUsageList -like '*Code Signing*' -or $_.HasPrivateKey) -and
+            $_.NotAfter -gt (Get-Date) -and
+            ($SubjectFilter -eq '' -or $_.Subject -like "*$SubjectFilter*")
+        }
+        if ($storeCerts) {
+            $certs += $storeCerts | Select-Object *, @{Name='Store'; Expression={$store}}
+        }
+    }
+
+    return $certs | Sort-Object NotAfter -Descending
+}
+
+function Show-CertificateList {
+    $certs = Find-CodeSigningCerts
+    if ($certs) {
+        Write-Host 'Available code signing certificates:' -ForegroundColor Green
+        for ($i = 0; $i -lt $certs.Count; $i++) {
+            $cert = $certs[$i]
+            Write-Host ''
+            Write-Host "[$($i + 1)] Subject: $($cert.Subject)" -ForegroundColor Cyan
+            Write-Host "    Issuer:  $($cert.Issuer)" -ForegroundColor Gray
+            Write-Host "    Thumbprint: $($cert.Thumbprint)" -ForegroundColor Yellow
+            Write-Host "    Valid Until: $($cert.NotAfter)" -ForegroundColor Gray
+            Write-Host "    Store: $($cert.Store)" -ForegroundColor Gray
+        }
+        Write-Host ''
+    } else {
+        Write-Host 'No valid code signing certificates found' -ForegroundColor Yellow
+    }
+    return $certs
+}
+
+function Get-BestCertificate {
+    $certs = Find-CodeSigningCerts
+
+    # First priority: Enterprise certificate (EmilyCarrU Intune)
+    $enterpriseCert = $certs | Where-Object { $_.Subject -like '*EmilyCarrU Intune*' } |
+        Sort-Object NotAfter -Descending | Select-Object -First 1
+    if ($enterpriseCert) { return $enterpriseCert }
+
+    # Fallback: prefer CurrentUser, newest expiration
+    return $certs | Sort-Object @{Expression={$_.Store -eq 'Cert:\CurrentUser\My'}; Descending=$true}, NotAfter -Descending | Select-Object -First 1
+}
+
+# --- Signing functions ---
+
+function Test-SignTool {
+    $c = Get-Command signtool.exe -ErrorAction SilentlyContinue
+    if ($c) {
+        Write-Log "Found signtool.exe: $($c.Source)" 'SUCCESS'
+        return
+    }
+
+    Write-Log 'signtool.exe not in PATH, searching Windows SDK...' 'INFO'
+
+    $roots = @(
+        "$env:ProgramFiles\Windows Kits\10\bin",
+        "${env:ProgramFiles(x86)}\Windows Kits\10\bin"
+    ) | Where-Object { Test-Path $_ }
+
+    try {
+        $kitsRoot = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows Kits\Installed Roots' -EA Stop).KitsRoot10
+        if ($kitsRoot) {
+            $binPath = Join-Path $kitsRoot 'bin'
+            if (Test-Path $binPath) { $roots += $binPath }
+        }
+    } catch { }
+
+    foreach ($root in $roots) {
+        $patterns = @(
+            (Join-Path $root '*\x64\signtool.exe'),
+            (Join-Path $root '*\arm64\signtool.exe')
+        )
+        foreach ($pattern in $patterns) {
+            $found = Get-ChildItem -Path $pattern -EA SilentlyContinue | Sort-Object LastWriteTime -Desc | Select-Object -First 1
+            if ($found) {
+                $env:Path = "$($found.Directory.FullName);$env:Path"
+                Write-Log "Found signtool.exe: $($found.FullName)" 'SUCCESS'
+                return
+            }
+        }
+    }
+
+    throw 'signtool.exe not found. Install Windows 10/11 SDK with Signing Tools.'
+}
+
+function Invoke-SignArtifact {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$CertThumbprint,
+        [string]$Store = 'Cert:\CurrentUser\My',
+        [int]$MaxAttempts = 3
+    )
+
+    if (-not (Test-Path -LiteralPath $Path)) { throw "File not found: $Path" }
+
+    $fileName = [System.IO.Path]::GetFileName($Path)
+    Write-Log "Signing: $fileName" 'INFO'
+
+    $tsas = @(
+        'http://timestamp.digicert.com',
+        'http://timestamp.sectigo.com',
+        'http://timestamp.entrust.net/TSS/RFC3161sha2TS',
+        'http://timestamp.comodoca.com/authenticode'
+    )
+
+    $storeArgs = if ($Store -match 'LocalMachine') { @('/s', 'My', '/sm') } else { @('/s', 'My') }
+
+    $attempt = 0
+    $lastError = $null
+
+    while ($attempt -lt $MaxAttempts) {
+        $attempt++
+
+        foreach ($tsa in $tsas) {
+            try {
+                $signArgs = @('sign') + $storeArgs + @(
+                    '/sha1', $CertThumbprint,
+                    '/fd', 'SHA256',
+                    '/td', 'SHA256',
+                    '/tr', $tsa,
+                    $Path
+                )
+
+                & signtool.exe @signArgs 2>&1 | Out-Null
+                if ($LASTEXITCODE -eq 0) {
+                    # Verify
+                    & signtool.exe verify /pa $Path 2>&1 | Out-Null
+                    if ($LASTEXITCODE -eq 0) {
+                        Write-Log "Signed and verified: $fileName" 'SUCCESS'
+                        return
+                    }
+                    Write-Log 'Signature verification failed' 'WARN'
+                }
+
+                $lastError = "signtool exit code: $LASTEXITCODE"
+                Write-Log "TSA $tsa failed: $lastError" 'WARN'
+                Start-Sleep -Seconds 2
+
+            } catch {
+                $lastError = $_.Exception.Message
+                Write-Log "Exception with TSA ${tsa}: $lastError" 'WARN'
+                Start-Sleep -Seconds 2
+            }
+        }
+
+        if ($attempt -lt $MaxAttempts) {
+            $wait = 4 * $attempt
+            Write-Log "Retrying in ${wait}s..." 'WARN'
+            Start-Sleep -Seconds $wait
+        }
+    }
+
+    throw "Signing failed after $MaxAttempts attempts. Last error: $lastError"
+}
+
+# --- Logging ---
+
+function Write-Log {
+    param(
+        [string]$Message,
+        [ValidateSet('INFO', 'WARN', 'ERROR', 'SUCCESS')]
+        [string]$Level = 'INFO'
+    )
     $color = switch ($Level) {
         'SUCCESS' { 'Green' }
-        'WARNING' { 'Yellow' }
+        'WARN'    { 'Yellow' }
         'ERROR'   { 'Red' }
         default   { 'Cyan' }
     }
     Write-Host "[$Level] $Message" -ForegroundColor $color
 }
 
-function Test-SignTool {
-    if (-not (Get-Command 'signtool.exe' -ErrorAction SilentlyContinue)) {
-        $sdkPaths = @(
-            "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe",
-            "${env:ProgramFiles(x86)}\Windows Kits\10\App Certification Kit\signtool.exe"
-        )
-        foreach ($pattern in $sdkPaths) {
-            $found = Get-ChildItem $pattern -ErrorAction SilentlyContinue | Sort-Object FullName -Descending | Select-Object -First 1
-            if ($found) {
-                $env:PATH += ";$($found.DirectoryName)"
-                return
+# --- Handle cert management commands ---
+
+if ($ListCerts) {
+    Show-CertificateList | Out-Null
+    return
+}
+
+if ($FindCertSubject) {
+    Write-Host "Searching for certificates containing: $FindCertSubject" -ForegroundColor Green
+    $certs = Find-CodeSigningCerts -SubjectFilter $FindCertSubject
+    if ($certs) {
+        for ($i = 0; $i -lt $certs.Count; $i++) {
+            $cert = $certs[$i]
+            Write-Host ''
+            Write-Host "[$($i + 1)] Subject: $($cert.Subject)" -ForegroundColor Cyan
+            Write-Host "    Thumbprint: $($cert.Thumbprint)" -ForegroundColor Yellow
+            Write-Host "    Valid Until: $($cert.NotAfter)" -ForegroundColor Gray
+            Write-Host "    Store: $($cert.Store)" -ForegroundColor Gray
+        }
+    } else {
+        Write-Host "No certificates found matching: $FindCertSubject" -ForegroundColor Yellow
+    }
+    return
+}
+
+# --- Main build ---
+
+Write-Host ''
+Write-Host '=== ManageUsers Build ===' -ForegroundColor Magenta
+Write-Host "Version:       $Version" -ForegroundColor Yellow
+Write-Host "Architecture:  $Architecture" -ForegroundColor Yellow
+Write-Host "Code Signing:  $(if ($AllowUnsigned) { 'DISABLED (dev only)' } else { 'REQUIRED' })" -ForegroundColor $(if ($AllowUnsigned) { 'Red' } else { 'Green' })
+Write-Host "Deploy:        $(if ($Deploy) { 'YES' } else { 'No' })" -ForegroundColor $(if ($Deploy) { 'Green' } else { 'Gray' })
+if ($AllowUnsigned) {
+    Write-Host ''
+    Write-Host 'WARNING: Unsigned build - NOT suitable for production deployment' -ForegroundColor Red
+}
+Write-Host ''
+
+# Auto-detect signing certificate
+$SigningCert = $null
+if (-not $AllowUnsigned) {
+    if ($Thumbprint) {
+        $stores = @('Cert:\CurrentUser\My', 'Cert:\LocalMachine\My')
+        foreach ($store in $stores) {
+            $cert = Get-ChildItem "$store\$Thumbprint" -ErrorAction SilentlyContinue
+            if ($cert) {
+                $SigningCert = @{ Thumbprint = $cert.Thumbprint; Store = $store }
+                Write-Log "Using specified certificate: $($cert.Subject)" 'SUCCESS'
+                break
             }
         }
-        throw "signtool.exe not found. Install Windows SDK."
-    }
-}
-
-function Find-SigningCertificate {
-    $certName = "EmilyCarrU Intune Windows Enterprise Certificate"
-    $stores = @('Cert:\CurrentUser\My', 'Cert:\LocalMachine\My')
-
-    foreach ($store in $stores) {
-        $cert = Get-ChildItem $store -ErrorAction SilentlyContinue |
-            Where-Object { $_.Subject -match $certName -and $_.NotAfter -gt (Get-Date) } |
-            Sort-Object NotAfter -Descending |
-            Select-Object -First 1
-
-        if ($cert) {
-            Write-BuildLog "Found signing certificate: $($cert.Thumbprint) (expires $($cert.NotAfter.ToString('yyyy-MM-dd')))"
-            return @{ Thumbprint = $cert.Thumbprint; Store = $store }
+        if (-not $SigningCert) { throw "Certificate with thumbprint $Thumbprint not found" }
+    } else {
+        $bestCert = Get-BestCertificate
+        if ($bestCert) {
+            $SigningCert = @{ Thumbprint = $bestCert.Thumbprint; Store = $bestCert.Store }
+            Write-Log "Auto-detected certificate: $($bestCert.Subject)" 'SUCCESS'
+            Write-Log "Thumbprint: $($bestCert.Thumbprint)" 'INFO'
+        } else {
+            throw 'No signing certificate found. Use -AllowUnsigned for dev builds or install enterprise certificate.'
         }
     }
-
-    return $null
+    Test-SignTool
 }
 
-function Invoke-SignArtifact {
-    param([string]$Path, [string]$Thumbprint, [string]$Store)
-
-    $storeFlag = if ($Store -match 'LocalMachine') { '/sm' } else { '' }
-    $args = @('sign', '/sha1', $Thumbprint, '/fd', 'SHA256', '/td', 'SHA256', '/tr', 'http://timestamp.digicert.com')
-    if ($storeFlag) { $args += $storeFlag }
-    $args += $Path
-
-    & signtool.exe @args 2>&1 | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        throw "Failed to sign: $Path"
+# Clean
+if ($Clean) {
+    if (Test-Path $OutputDir) {
+        Remove-Item $OutputDir -Recurse -Force
+        Write-Log 'Cleaned release directory' 'INFO'
     }
-    Write-BuildLog "Signed: $(Split-Path $Path -Leaf)" -Level 'SUCCESS'
-}
-
-# Main build logic
-Write-BuildLog "ManageUsers Build — v$version"
-Write-BuildLog "Architecture: $Architecture"
-
-if ($Clean -and (Test-Path $OutputDir)) {
-    Remove-Item $OutputDir -Recurse -Force
-    Write-BuildLog "Cleaned release directory"
+    # Also clean intermediate build artifacts
+    $cleanPaths = @(
+        (Join-Path $RootDir 'src' 'ManageUsers' 'bin'),
+        (Join-Path $RootDir 'src' 'ManageUsers' 'obj')
+    )
+    foreach ($p in $cleanPaths) {
+        if (Test-Path $p) { Remove-Item $p -Recurse -Force }
+    }
 }
 
 # Resolve architectures
 $archs = if ($Architecture -eq 'both') { @('x64', 'arm64') } else { @($Architecture) }
 $runtimeMap = @{ 'x64' = 'win-x64'; 'arm64' = 'win-arm64' }
 
-# Build
+# Build each architecture
 foreach ($arch in $archs) {
     $runtime = $runtimeMap[$arch]
     $archOutput = Join-Path $OutputDir $arch
@@ -125,7 +312,7 @@ foreach ($arch in $archs) {
         New-Item -ItemType Directory -Path $archOutput -Force | Out-Null
     }
 
-    Write-BuildLog "Building for $runtime..."
+    Write-Log "Publishing for $runtime..." 'INFO'
 
     $publishArgs = @(
         'publish', $ProjectPath,
@@ -136,36 +323,84 @@ foreach ($arch in $archs) {
         '-p:PublishSingleFile=true',
         '-p:EnableCompressionInSingleFile=true',
         '-p:IncludeSourceRevisionInInformationalVersion=false',
-        "-p:Version=$version",
-        "-p:AssemblyVersion=$version",
-        "-p:FileVersion=$version",
+        "-p:Version=$Version",
+        "-p:AssemblyVersion=$Version",
+        "-p:FileVersion=$Version",
         '--verbosity', 'minimal'
     )
 
     & dotnet @publishArgs
-    if ($LASTEXITCODE -ne 0) {
-        throw "Build failed for $runtime"
-    }
+    if ($LASTEXITCODE -ne 0) { throw "Build failed for $runtime" }
 
-    Write-BuildLog "Built manageusers ($runtime)" -Level 'SUCCESS'
+    $exePath = Join-Path $archOutput 'manageusers.exe'
+    if (-not (Test-Path $exePath)) { throw "Expected output not found: $exePath" }
+
+    $exeSize = [math]::Round((Get-Item $exePath).Length / 1MB, 2)
+    Write-Log "Built manageusers.exe ($runtime) - ${exeSize} MB" 'SUCCESS'
 }
 
 # Sign
-if ($Sign) {
-    $certInfo = Find-SigningCertificate
-    if (-not $certInfo) {
-        throw "No signing certificate found. Cannot build without signing."
-    }
-
-    Test-SignTool
-
+if ($SigningCert) {
+    Write-Host ''
     foreach ($arch in $archs) {
         $archDir = Join-Path $OutputDir $arch
         $exeFiles = Get-ChildItem -Path $archDir -Filter '*.exe' -File -ErrorAction SilentlyContinue
         foreach ($exe in $exeFiles) {
-            Invoke-SignArtifact -Path $exe.FullName -Thumbprint $certInfo.Thumbprint -Store $certInfo.Store
+            Invoke-SignArtifact -Path $exe.FullName -CertThumbprint $SigningCert.Thumbprint -Store $SigningCert.Store
         }
     }
 }
 
-Write-BuildLog "Build complete — output in $OutputDir" -Level 'SUCCESS'
+# Deploy to Cimian payload
+if ($Deploy) {
+    Write-Host ''
+    Write-Log 'Deploying to Cimian payload...' 'INFO'
+
+    # Auto-detect Cimian repo path
+    if (-not $CimianPayloadPath) {
+        $candidatePaths = @(
+            (Join-Path (Split-Path $RootDir -Parent) 'Cimian' 'packages' 'ManageUsers' 'payload' 'ProgramData' 'Management' 'Scripts'),
+            (Join-Path $env:USERPROFILE 'DevOps' 'Cimian' 'packages' 'ManageUsers' 'payload' 'ProgramData' 'Management' 'Scripts')
+        )
+        foreach ($candidate in $candidatePaths) {
+            if (Test-Path (Split-Path $candidate -Parent)) {
+                $CimianPayloadPath = $candidate
+                break
+            }
+        }
+    }
+
+    if (-not $CimianPayloadPath) {
+        Write-Log 'Could not auto-detect Cimian payload path. Use -CimianPayloadPath.' 'ERROR'
+    } else {
+        if (-not (Test-Path $CimianPayloadPath)) {
+            New-Item -ItemType Directory -Path $CimianPayloadPath -Force | Out-Null
+        }
+
+        # Deploy architecture-specific binary
+        # For dual-arch packages, default to x64 (Cimian handles arch-specific payloads separately)
+        $deployArch = if ($archs.Count -eq 1) { $archs[0] } else { 'x64' }
+        $sourceExe = Join-Path $OutputDir $deployArch 'manageusers.exe'
+
+        if (Test-Path $sourceExe) {
+            Copy-Item -Path $sourceExe -Destination $CimianPayloadPath -Force
+            Write-Log "Deployed $deployArch binary to: $CimianPayloadPath" 'SUCCESS'
+        } else {
+            Write-Log "Binary not found: $sourceExe" 'ERROR'
+        }
+    }
+}
+
+# Summary
+Write-Host ''
+Write-Host '=== Build Complete ===' -ForegroundColor Green
+foreach ($arch in $archs) {
+    $exe = Join-Path $OutputDir $arch 'manageusers.exe'
+    if (Test-Path $exe) {
+        $size = [math]::Round((Get-Item $exe).Length / 1MB, 2)
+        $signed = if ($SigningCert) { 'signed' } else { 'unsigned' }
+        Write-Host "  $arch : $exe ($size MB, $signed)" -ForegroundColor Cyan
+    }
+}
+Write-Host "  Version: $Version" -ForegroundColor Gray
+Write-Host ''

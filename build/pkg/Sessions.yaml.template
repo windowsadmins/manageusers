@@ -1,0 +1,14 @@
+Exclusions:
+  - Administrator
+  - DefaultAccount
+  - Guest
+  - WDAGUtilityAccount
+  - defaultuser0
+  - admin
+  - student
+  - doc
+  - cts
+  - fvim
+  - fmsa
+  - nmsatech
+DeferredDeletes: []
