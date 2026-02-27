@@ -31,12 +31,17 @@ public class Program
             ["--version", "-v"],
             "Print version and exit");
 
+        var inventoryOption = new Option<string?>(
+            "--inventory",
+            "Path to a custom inventory YAML file (default: C:\\ProgramData\\Management\\Inventory.yaml)");
+
         rootCommand.AddOption(simulateOption);
         rootCommand.AddOption(forceOption);
         rootCommand.AddOption(liveOption);
         rootCommand.AddOption(versionOption);
+        rootCommand.AddOption(inventoryOption);
 
-        rootCommand.SetHandler((bool simulate, bool force, bool live, bool version) =>
+        rootCommand.SetHandler((bool simulate, bool force, bool live, bool version, string? inventory) =>
         {
             if (version)
             {
@@ -56,7 +61,7 @@ public class Program
 
             try
             {
-                var engine = new ManageUsersEngine(simulate, force);
+                var engine = new ManageUsersEngine(simulate, force, inventory);
                 var exitCode = engine.Run();
                 Environment.Exit(exitCode);
             }
@@ -64,7 +69,7 @@ public class Program
             {
                 mutex.ReleaseMutex();
             }
-        }, simulateOption, forceOption, liveOption, versionOption);
+        }, simulateOption, forceOption, liveOption, versionOption, inventoryOption);
 
         return await rootCommand.InvokeAsync(args);
     }

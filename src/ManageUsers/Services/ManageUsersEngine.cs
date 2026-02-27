@@ -16,12 +16,12 @@ public sealed class ManageUsersEngine
     private readonly bool _simulate;
     private readonly bool _force;
 
-    public ManageUsersEngine(bool simulate, bool force)
+    public ManageUsersEngine(bool simulate, bool force, string? inventoryPath = null)
     {
         _simulate = simulate;
         _force = force;
         _log = new LogService();
-        _config = new ConfigService(_log);
+        _config = new ConfigService(_log, inventoryPath);
         _policy = new PolicyService(_log);
         _enum = new UserEnumerationService(_log);
         _delete = new UserDeletionService(_log, _config, simulate);
