@@ -8,7 +8,7 @@ description: Manages local user accounts on shared Windows devices by removing i
 developer: EmilyCarrU
 installcheck_script: |
   $ErrorActionPreference = 'SilentlyContinue'
-  $binaryPath = 'C:\ProgramData\Management\Scripts\manageusers.exe'
+  $binaryPath = 'C:\Program Files\sbin\manageusers.exe'
   $taskName = 'WinAdmins-ManageUsers'
 
   # Check if binary exists

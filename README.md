@@ -6,8 +6,8 @@ Designed for enterprise environments with 10,000+ devices managed by [Cimian](ht
 
 ## How It Works
 
-1. Reads device inventory from `C:\ProgramData\Management\Inventory.yaml` (area, room, usage)
-2. Calculates deletion policy based on area/room rules
+1. Reads device inventory from `C:\ProgramData\Management\Inventory.yaml` (or a custom path via `--inventory`)
+2. Calculates deletion policy based on area/room rules defined in `PolicyService`
 3. Enumerates local users, gathers creation dates and last login times
 4. Deletes users that exceed the inactivity threshold
 5. Cleans up orphaned accounts and profiles
@@ -15,31 +15,41 @@ Designed for enterprise environments with 10,000+ devices managed by [Cimian](ht
 
 ## Policy Matrix
 
-| Area/Room | Duration | Strategy | End of Term |
+Policies are determined by matching the device's `area` and `location` fields from inventory. Customize `PolicyService.cs` to fit your environment.
+
+| Match Pattern | Duration | Strategy | End of Term |
 |---|---|---|---|
-| Library, DOC, CommDesign | 2 days | Creation only | — |
-| Photo, Illustration, B1110, D3360 | 30 days | Creation only | — |
-| FMSA, NMSA, B1122, B4120 | 6 weeks | Login + Creation | Force delete all |
-| Default | 4 weeks | Login + Creation | — |
+| High-turnover labs (kiosks, drop-in) | 2 days | Creation only | — |
+| Medium-use studios | 30 days | Creation only | — |
+| Assigned labs / classrooms | 6 weeks | Login + Creation | Force delete all |
+| Default (no match) | 4 weeks | Login + Creation | — |
+
+**Strategies:**
+- **Creation only** — deletes accounts older than the threshold regardless of login activity
+- **Login + Creation** — deletes accounts that are both old enough *and* haven't logged in recently
 
 ## Configuration
 
 ### Inventory (read-only)
-`C:\ProgramData\Management\Inventory.yaml` — written by Cimian enrollment:
+`C:\ProgramData\Management\Inventory.yaml` — written by your enrollment system:
 ```yaml
-area: "Photo"
+area: "Studio"
 location: "B1110"
 usage: "Shared"
 ```
 
+You can override this path at runtime with `--inventory <path>`.
+
 ### Sessions
-`C:\ProgramData\Management\Users\Sessions.yaml` — exclusions and deferred state:
+`C:\ProgramData\Management\ManageUsers\Sessions.yaml` — exclusions and deferred state:
 ```yaml
 Exclusions:
-  - admin
-  - student
+  - svc-account
+  - lab-admin
 DeferredDeletes: []
 ```
+
+Built-in Windows accounts (Administrator, DefaultAccount, Guest, WDAGUtilityAccount, defaultuser0) are always excluded automatically.
 
 ## Building
 
@@ -49,6 +59,9 @@ DeferredDeletes: []
 
 # Build arm64 only
 .\build.ps1 -Sign -Architecture arm64
+
+# Deploy signed binaries to Cimian payload
+.\build.ps1 -Sign -Deploy
 ```
 
 Produces `release/x64/manageusers.exe` and `release/arm64/manageusers.exe`.
@@ -56,14 +69,17 @@ Produces `release/x64/manageusers.exe` and `release/arm64/manageusers.exe`.
 ## Usage
 
 ```pwsh
-# Dry run
+# Dry run (no deletions)
 manageusers.exe --simulate
 
 # Live deletion
 manageusers.exe
 
-# Force mode (threshold = 0)
+# Force mode (threshold = 0, deletes all non-excluded users)
 manageusers.exe --force
+
+# Use a custom inventory file
+manageusers.exe --inventory "D:\Config\inventory.yaml"
 
 # Version
 manageusers.exe --version
@@ -74,7 +90,7 @@ manageusers.exe --version
 Deployed via Cimian as a `.pkg` package. The postinstall script registers a scheduled task:
 - Runs as SYSTEM
 - Daily at 3:00 AM + at startup
-- Action: `C:\ProgramData\Management\Scripts\manageusers.exe`
+- Action: `C:\Program Files\sbin\manageusers.exe`
 
 ## Project Structure
 
@@ -82,6 +98,12 @@ Deployed via Cimian as a `.pkg` package. The postinstall script registers a sche
 ManageUsers/
 ├── build.ps1                         # Build + sign script
 ├── ManageUsers.sln
+├── build/pkg/                        # Cimian packaging files
+│   ├── build-info.yaml
+│   ├── postinstall.ps1
+│   ├── preinstall.ps1
+│   └── Sessions.yaml.template
+├── deploy/                           # Cimian pkgsinfo manifests
 └── src/ManageUsers/
     ├── ManageUsers.csproj
     ├── app.manifest
@@ -90,7 +112,7 @@ ManageUsers/
     │   ├── AppConstants.cs           # Paths, durations, exclusion list
     │   ├── DeletionPolicy.cs         # Policy + strategy enums
     │   ├── InventoryData.cs          # Inventory.yaml model
-    │   ├── SessionsData.cs           # Sessions.yaml model
+    │   ├── SessionsData.cs          # Sessions.yaml model
     │   └── UserSessionInfo.cs        # Per-user session data
     └── Services/
         ├── ConfigService.cs          # YAML read/write + exclusion merge
