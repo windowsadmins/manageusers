@@ -3,9 +3,9 @@
 
 $ErrorActionPreference = 'Stop'
 
-$installLocation = 'C:\ProgramData\Management\Scripts'
+$installLocation = 'C:\Program Files\sbin'
 $binaryPath = Join-Path $installLocation 'manageusers.exe'
-$sessionsDir = 'C:\ProgramData\Management\Users'
+$sessionsDir = 'C:\ProgramData\Management\ManageUsers'
 $sessionsFile = Join-Path $sessionsDir 'Sessions.yaml'
 $sessionsTemplate = Join-Path $sessionsDir 'Sessions.yaml.template'
 $logDir = 'C:\ProgramData\Management\Logs'

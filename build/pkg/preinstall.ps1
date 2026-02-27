@@ -23,9 +23,10 @@ foreach ($taskName in $legacyTasks) {
 }
 Write-Host "[ManageUsers] Removed $removedCount legacy task(s)" -ForegroundColor Green
 
-# Remove legacy PowerShell script if it was from an earlier iteration
+# Remove legacy files from earlier iterations
 $legacyFiles = @(
-    'C:\ProgramData\Management\Scripts\ManageUsers.ps1'
+    'C:\ProgramData\Management\Scripts\ManageUsers.ps1',
+    'C:\ProgramData\Management\Scripts\manageusers.exe'
 )
 
 $removedFiles = 0
