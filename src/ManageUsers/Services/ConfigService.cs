@@ -10,6 +10,7 @@ namespace ManageUsers.Services;
 public sealed class ConfigService
 {
     private readonly LogService _log;
+    private readonly string _inventoryPath;
     private static readonly IDeserializer Deserializer = new DeserializerBuilder()
         .WithNamingConvention(NullNamingConvention.Instance)
         .IgnoreUnmatchedProperties()
@@ -18,21 +19,21 @@ public sealed class ConfigService
         .WithNamingConvention(NullNamingConvention.Instance)
         .Build();
 
-    public ConfigService(LogService log)
+    public ConfigService(LogService log, string? inventoryPath = null)
     {
         _log = log;
+        _inventoryPath = inventoryPath ?? AppConstants.DefaultInventoryYamlPath;
     }
 
     public InventoryData LoadInventory()
     {
-        var path = AppConstants.InventoryYamlPath;
-        if (!File.Exists(path))
+        if (!File.Exists(_inventoryPath))
         {
-            _log.Warning($"Inventory file not found: {path}");
+            _log.Warning($"Inventory file not found: {_inventoryPath}");
             return new InventoryData();
         }
 
-        var yaml = File.ReadAllText(path);
+        var yaml = File.ReadAllText(_inventoryPath);
         return Deserializer.Deserialize<InventoryData>(yaml) ?? new InventoryData();
     }
 

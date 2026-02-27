@@ -9,8 +9,12 @@ public static class AppConstants
         Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
         "Management");
 
-    public static readonly string SessionsYamlPath = Path.Combine(ManagementRoot, "Users", "Sessions.yaml");
-    public static readonly string InventoryYamlPath = Path.Combine(ManagementRoot, "Inventory.yaml");
+    public static readonly string InstallDir = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+        "sbin");
+
+    public static readonly string SessionsYamlPath = Path.Combine(ManagementRoot, "ManageUsers", "Sessions.yaml");
+    public static readonly string DefaultInventoryYamlPath = Path.Combine(ManagementRoot, "Inventory.yaml");
     public static readonly string LogDir = Path.Combine(ManagementRoot, "Logs");
     public static readonly string LogFile = Path.Combine(LogDir, "ManageUsers.log");
 
@@ -25,7 +29,8 @@ public static class AppConstants
     public const int ThirteenWeeks = 91;
 
     /// <summary>
-    /// Users that are never deleted regardless of configuration.
+    /// Built-in Windows accounts that are never deleted.
+    /// Additional exclusions can be configured in Sessions.yaml.
     /// </summary>
     public static readonly HashSet<string> AlwaysExcludedUsers = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -33,14 +38,6 @@ public static class AppConstants
         "DefaultAccount",
         "Guest",
         "WDAGUtilityAccount",
-        "defaultuser0",
-        "admin",
-        "student",
-        "doc",
-        "cts",
-        "fvim",
-        "fmsa",
-        "nmsatech",
-        "winadmins"
+        "defaultuser0"
     };
 }
