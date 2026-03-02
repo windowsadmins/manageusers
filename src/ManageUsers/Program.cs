@@ -1,5 +1,4 @@
 using System.CommandLine;
-using System.Reflection;
 using System.Text;
 using ManageUsers.Services;
 
@@ -27,10 +26,6 @@ public class Program
             "--live",
             "Explicit live mode (no-op, default is live unless --simulate)");
 
-        var versionOption = new Option<bool>(
-            ["--version", "-v"],
-            "Print version and exit");
-
         var inventoryOption = new Option<string?>(
             "--inventory",
             "Path to a custom inventory YAML file (default: C:\\ProgramData\\Management\\Inventory.yaml)");
@@ -38,17 +33,10 @@ public class Program
         rootCommand.AddOption(simulateOption);
         rootCommand.AddOption(forceOption);
         rootCommand.AddOption(liveOption);
-        rootCommand.AddOption(versionOption);
         rootCommand.AddOption(inventoryOption);
 
-        rootCommand.SetHandler((bool simulate, bool force, bool live, bool version, string? inventory) =>
+        rootCommand.SetHandler((bool simulate, bool force, bool live, string? inventory) =>
         {
-            if (version)
-            {
-                PrintVersion();
-                return;
-            }
-
             // Single-instance guard
             bool createdNew;
             using var mutex = new Mutex(true, MutexName, out createdNew);
@@ -69,15 +57,8 @@ public class Program
             {
                 mutex.ReleaseMutex();
             }
-        }, simulateOption, forceOption, liveOption, versionOption, inventoryOption);
+        }, simulateOption, forceOption, liveOption, inventoryOption);
 
         return await rootCommand.InvokeAsync(args);
-    }
-
-    private static void PrintVersion()
-    {
-        var assembly = Assembly.GetExecutingAssembly();
-        var version = assembly.GetName().Version ?? new Version(1, 0, 0);
-        Console.WriteLine($"manageusers v{version}");
     }
 }
