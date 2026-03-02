@@ -8,6 +8,8 @@ $binaryPath = Join-Path $installLocation 'manageusers.exe'
 $sessionsDir = 'C:\ProgramData\Management\ManageUsers'
 $sessionsFile = Join-Path $sessionsDir 'Sessions.yaml'
 $sessionsTemplate = Join-Path $sessionsDir 'Sessions.yaml.template'
+$configFile = Join-Path $sessionsDir 'Config.yaml'
+$configTemplate = Join-Path $sessionsDir 'Config.yaml.template'
 $logDir = 'C:\ProgramData\Management\Logs'
 $taskName = 'WinAdmins-ManageUsers'
 
@@ -38,6 +40,16 @@ if (-not (Test-Path $sessionsFile)) {
         Write-Host "[ManageUsers] Initialized Sessions.yaml from template" -ForegroundColor Gray
     } else {
         Write-Host "[ManageUsers] WARNING: No Sessions.yaml template found" -ForegroundColor Yellow
+    }
+}
+
+# Initialize Config.yaml from template if not present
+if (-not (Test-Path $configFile)) {
+    if (Test-Path $configTemplate) {
+        Copy-Item -Path $configTemplate -Destination $configFile -Force
+        Write-Host "[ManageUsers] Initialized Config.yaml from template" -ForegroundColor Gray
+    } else {
+        Write-Host "[ManageUsers] WARNING: No Config.yaml template found" -ForegroundColor Yellow
     }
 }
 
