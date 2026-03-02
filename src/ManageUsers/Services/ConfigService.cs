@@ -1,4 +1,5 @@
 using ManageUsers.Models;
+using System.Diagnostics;
 using YamlDotNet.Serialization;
 using YamlDotNet.Serialization.NamingConventions;
 
@@ -121,26 +122,40 @@ public sealed class ConfigService
         return exclusions;
     }
 
-    private string? GetConsoleUser()
+    private static string? GetConsoleUser()
     {
         try
         {
-            using var searcher = new System.Management.ManagementObjectSearcher(
-                "SELECT UserName FROM Win32_ComputerSystem");
-            foreach (var obj in searcher.Get())
+            var psi = new ProcessStartInfo("quser")
             {
-                var username = obj["UserName"]?.ToString();
-                if (!string.IsNullOrEmpty(username))
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+                UseShellExecute = false
+            };
+            using var proc = Process.Start(psi);
+            if (proc == null) return null;
+            var output = proc.StandardOutput.ReadToEnd();
+            proc.WaitForExit(5000);
+
+            // quser output: USERNAME  SESSIONNAME  ID  STATE  IDLE TIME  LOGON TIME
+            foreach (var line in output.Split('\n').Skip(1))
+            {
+                if (string.IsNullOrWhiteSpace(line)) continue;
+                if (line.Contains("Active", StringComparison.OrdinalIgnoreCase))
                 {
-                    // Strip domain prefix (DOMAIN\user or AzureAD\user)
-                    var parts = username.Split('\\');
-                    return parts.Length > 1 ? parts[^1] : username;
+                    var parts = line.Split([' '], StringSplitOptions.RemoveEmptyEntries);
+                    if (parts.Length > 0)
+                    {
+                        var user = parts[0].TrimStart('>');
+                        return user;
+                    }
                 }
             }
         }
         catch
         {
-            // WMI query failed — not critical, just means we can't detect console user
+            // quser failed — not critical, just means we can't detect console user
         }
 
         return null;

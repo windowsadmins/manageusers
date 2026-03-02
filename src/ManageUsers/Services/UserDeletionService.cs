@@ -1,6 +1,6 @@
 using ManageUsers.Models;
 using System.Diagnostics;
-using System.Management;
+using Microsoft.Win32;
 
 namespace ManageUsers.Services;
 
@@ -130,16 +130,22 @@ public sealed class UserDeletionService
     {
         try
         {
-            using var searcher = new ManagementObjectSearcher(
-                "SELECT UserName FROM Win32_ComputerSystem");
-            foreach (var obj in searcher.Get())
+            var psi = new ProcessStartInfo("quser")
             {
-                var logged = obj["UserName"]?.ToString();
-                if (string.IsNullOrEmpty(logged))
-                    continue;
-                var parts = logged.Split('\\');
-                var consoleUser = parts.Length > 1 ? parts[^1] : logged;
-                if (consoleUser.Equals(username, StringComparison.OrdinalIgnoreCase))
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+                UseShellExecute = false
+            };
+            using var proc = Process.Start(psi);
+            if (proc == null) return false;
+            var output = proc.StandardOutput.ReadToEnd();
+            proc.WaitForExit(5000);
+
+            foreach (var line in output.Split('\n'))
+            {
+                if (line.Contains(username, StringComparison.OrdinalIgnoreCase)
+                    && line.Contains("Active", StringComparison.OrdinalIgnoreCase))
                     return true;
             }
         }
@@ -152,30 +158,11 @@ public sealed class UserDeletionService
     {
         try
         {
-            // Use WMI to find processes owned by the user
-            using var searcher = new ManagementObjectSearcher("SELECT ProcessId, Name FROM Win32_Process");
-            foreach (ManagementObject obj in searcher.Get())
-            {
-                try
-                {
-                    var ownerParams = new object[2];
-                    obj.InvokeMethod("GetOwner", ownerParams);
-                    var owner = ownerParams[0]?.ToString();
-                    if (!string.IsNullOrEmpty(owner) && owner.Equals(username, StringComparison.OrdinalIgnoreCase))
-                    {
-                        var pid = Convert.ToInt32(obj["ProcessId"]);
-                        var name = obj["Name"]?.ToString();
-                        _log.Info($"Killing process {name} (PID {pid}) owned by {username}");
-                        try
-                        {
-                            var proc = Process.GetProcessById(pid);
-                            proc.Kill(entireProcessTree: true);
-                        }
-                        catch { }
-                    }
-                }
-                catch { }
-            }
+            var target = $"{Environment.MachineName}\\{username}";
+            _log.Info($"Killing all processes for user: {username}");
+            var result = RunProcess("taskkill", $"/f /fi \"USERNAME eq {target}\"");
+            if (!string.IsNullOrWhiteSpace(result))
+                _log.Info($"taskkill: {result.Trim()}");
         }
         catch (Exception ex)
         {
@@ -291,55 +278,67 @@ public sealed class UserDeletionService
 
     private void RemoveUserProfile(string username)
     {
+        // Remove profile registry entry
         try
         {
-            // Remove profile via WMI — this deletes the registry entry AND the home directory
-            using var searcher = new ManagementObjectSearcher(
-                $"SELECT * FROM Win32_UserProfile WHERE LocalPath LIKE '%\\\\{username}'");
-            foreach (ManagementObject obj in searcher.Get())
+            using var profileList = Registry.LocalMachine.OpenSubKey(
+                @"SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList", writable: true);
+            if (profileList != null)
             {
-                try
+                foreach (var sidStr in profileList.GetSubKeyNames())
                 {
-                    obj.Delete();
-                    _log.Info($"Profile deleted for {username}");
-                    return;
-                }
-                catch (Exception ex)
-                {
-                    _log.Warning($"WMI profile deletion failed for {username}: {ex.Message}");
+                    using var sidKey = profileList.OpenSubKey(sidStr);
+                    var path = sidKey?.GetValue("ProfileImagePath")?.ToString();
+                    if (path != null && path.EndsWith($"\\{username}", StringComparison.OrdinalIgnoreCase))
+                    {
+                        profileList.DeleteSubKeyTree(sidStr);
+                        _log.Info($"Profile registry entry deleted for {username}");
+                        break;
+                    }
                 }
             }
         }
         catch (Exception ex)
         {
-            _log.Warning($"Profile search failed for {username}: {ex.Message}");
+            _log.Warning($"Failed to remove profile registry entry for {username}: {ex.Message}");
         }
 
-        // Fallback: manual directory removal
+        // Remove profile directory
         var homePath = Path.Combine(@"C:\Users", username);
         if (Directory.Exists(homePath))
         {
             try
             {
                 Directory.Delete(homePath, recursive: true);
-                _log.Info($"Home directory manually removed: {homePath}");
+                _log.Info($"Profile directory removed: {homePath}");
             }
             catch (Exception ex)
             {
-                _log.Warning($"Failed to remove home directory {homePath}: {ex.Message}");
+                _log.Warning($"Failed to remove profile directory {homePath}: {ex.Message}");
             }
         }
     }
 
     private bool VerifyDeletion(string username)
     {
-        // Verify user no longer exists in local accounts
+        // Verify user no longer exists via net user exit code
         try
         {
-            using var searcher = new ManagementObjectSearcher(
-                $"SELECT Name FROM Win32_UserAccount WHERE LocalAccount = TRUE AND Name = '{username}'");
-            if (searcher.Get().Count > 0)
-                return false;
+            var psi = new ProcessStartInfo("net", $"user \"{username}\"")
+            {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+                UseShellExecute = false
+            };
+            using var proc = Process.Start(psi);
+            if (proc != null)
+            {
+                proc.StandardOutput.ReadToEnd();
+                proc.WaitForExit(5000);
+                if (proc.ExitCode == 0)
+                    return false; // user still exists
+            }
         }
         catch { }
 
