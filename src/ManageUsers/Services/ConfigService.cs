@@ -25,6 +25,45 @@ public sealed class ConfigService
         _inventoryPath = inventoryPath ?? AppConstants.DefaultInventoryYamlPath;
     }
 
+    public PolicyConfig LoadPolicyConfig()
+    {
+        var path = AppConstants.ConfigYamlPath;
+        if (!File.Exists(path))
+        {
+            _log.Warning($"Config file not found: {path} — using built-in defaults");
+            return GetDefaultPolicyConfig();
+        }
+
+        try
+        {
+            var yaml = File.ReadAllText(path);
+            var config = Deserializer.Deserialize<PolicyConfig>(yaml);
+            if (config?.Policies == null || config.Policies.Count == 0)
+            {
+                _log.Warning("Config.yaml has no policies defined — using built-in defaults");
+                return GetDefaultPolicyConfig();
+            }
+            _log.Info($"Loaded {config.Policies.Count} policy rule(s) from Config.yaml");
+            return config;
+        }
+        catch (Exception ex)
+        {
+            _log.Warning($"Failed to parse Config.yaml: {ex.Message} — using built-in defaults");
+            return GetDefaultPolicyConfig();
+        }
+    }
+
+    private static PolicyConfig GetDefaultPolicyConfig() => new()
+    {
+        DefaultPolicy = new DefaultPolicyRule { DurationDays = 28, Strategy = "login_and_creation" },
+        EndOfTermDates =
+        [
+            new TermDate { Month = 4, Day = 30 },
+            new TermDate { Month = 8, Day = 31 },
+            new TermDate { Month = 12, Day = 31 }
+        ]
+    };
+
     public InventoryData LoadInventory()
     {
         if (!File.Exists(_inventoryPath))
