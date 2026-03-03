@@ -36,11 +36,12 @@ public sealed class PolicyService
 
         var area = inventory.Area.Trim();
         var room = inventory.Location.Trim();
+        var usage = inventory.Usage.Trim();
 
         // Evaluate rules in order — first match wins
         foreach (var rule in _config.Policies)
         {
-            if (Matches(rule.Match, area, room))
+            if (Matches(rule.Match, area, room, usage))
             {
                 if (isEndOfTerm && rule.ForceAtEndOfTerm)
                 {
@@ -65,7 +66,7 @@ public sealed class PolicyService
 
         // No rule matched — use default
         var def = _config.DefaultPolicy;
-        _log.Info($"No rule matched area='{area}'/room='{room}' → default policy: {def.DurationDays} days, {def.Strategy}");
+        _log.Info($"No rule matched area='{area}'/room='{room}'/usage='{usage}' → default policy: {def.DurationDays} days, {def.Strategy}");
         return new DeletionPolicy
         {
             DurationDays = def.DurationDays,
@@ -74,19 +75,26 @@ public sealed class PolicyService
         };
     }
 
-    private static bool Matches(MatchCriteria match, string area, string room)
+    private static bool Matches(MatchCriteria match, string area, string room, string usage)
     {
         bool areaMatch = string.IsNullOrWhiteSpace(match.Area)
             || Regex.IsMatch(area, match.Area, RegexOptions.IgnoreCase);
         bool roomMatch = string.IsNullOrWhiteSpace(match.Room)
             || Regex.IsMatch(room, match.Room, RegexOptions.IgnoreCase);
+        bool usageMatch = string.IsNullOrWhiteSpace(match.Usage)
+            || Regex.IsMatch(usage, match.Usage, RegexOptions.IgnoreCase);
 
-        // If both are specified, either can match (OR logic).
-        // If only one is specified, that one must match.
-        if (!string.IsNullOrWhiteSpace(match.Area) && !string.IsNullOrWhiteSpace(match.Room))
-            return areaMatch || roomMatch;
+        // Collect only the criteria that are actually specified
+        var specified = new List<bool>();
+        if (!string.IsNullOrWhiteSpace(match.Area)) specified.Add(areaMatch);
+        if (!string.IsNullOrWhiteSpace(match.Room)) specified.Add(roomMatch);
+        if (!string.IsNullOrWhiteSpace(match.Usage)) specified.Add(usageMatch);
 
-        return areaMatch && roomMatch;
+        // If nothing specified, no match
+        if (specified.Count == 0) return false;
+
+        // All specified criteria must match (AND logic)
+        return specified.All(m => m);
     }
 
     private static DeletionStrategy ParseStrategy(string strategy) =>

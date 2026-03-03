@@ -39,7 +39,7 @@ public sealed class PolicyRule
 }
 
 /// <summary>
-/// Regex patterns to match against inventory area and/or room.
+/// Regex patterns to match against inventory fields (area, room, usage).
 /// </summary>
 public sealed class MatchCriteria
 {
@@ -48,6 +48,9 @@ public sealed class MatchCriteria
 
     [YamlMember(Alias = "room")]
     public string? Room { get; set; }
+
+    [YamlMember(Alias = "usage")]
+    public string? Usage { get; set; }
 }
 
 /// <summary>
