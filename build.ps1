@@ -1,13 +1,13 @@
 #!/usr/bin/env pwsh
 # ManageUsers Build Script
-# Builds, signs, and optionally deploys ManageUsers binary to Cimian payload
+# Builds, signs, and packages ManageUsers binary for Cimian deployment
 #
 # Examples:
 #   .\build.ps1                          # Build + sign for both architectures (default)
+#   .\build.ps1 -Pkg                     # Build, sign, and create .pkg with cimipkg
 #   .\build.ps1 -Thumbprint "ABC123..."  # Build with specific certificate
 #   .\build.ps1 -AllowUnsigned           # Development build without signing (NOT for production)
 #   .\build.ps1 -Architecture arm64      # Build single architecture
-#   .\build.ps1 -Deploy                  # Build, sign, and copy to Cimian payload directory
 #   .\build.ps1 -ListCerts               # List available code signing certificates
 #   .\build.ps1 -Clean                   # Clean build output first
 
@@ -20,8 +20,7 @@ param(
     [switch]$AllowUnsigned,
     [switch]$ListCerts,
     [string]$FindCertSubject,
-    [switch]$Deploy,
-    [string]$CimianPayloadPath
+    [switch]$Pkg
 )
 
 $ErrorActionPreference = 'Stop'
@@ -249,7 +248,7 @@ Write-Host '=== ManageUsers Build ===' -ForegroundColor Magenta
 Write-Host "Version:       $Version" -ForegroundColor Yellow
 Write-Host "Architecture:  $Architecture" -ForegroundColor Yellow
 Write-Host "Code Signing:  $(if ($AllowUnsigned) { 'DISABLED (dev only)' } else { 'REQUIRED' })" -ForegroundColor $(if ($AllowUnsigned) { 'Red' } else { 'Green' })
-Write-Host "Deploy:        $(if ($Deploy) { 'YES' } else { 'No' })" -ForegroundColor $(if ($Deploy) { 'Green' } else { 'Gray' })
+Write-Host "Package:       $(if ($Pkg) { 'YES (.pkg via cimipkg)' } else { 'No' })" -ForegroundColor $(if ($Pkg) { 'Green' } else { 'Gray' })
 if ($AllowUnsigned) {
     Write-Host ''
     Write-Host 'WARNING: Unsigned build - NOT suitable for production deployment' -ForegroundColor Red
@@ -351,44 +350,73 @@ if ($SigningCert) {
     }
 }
 
-# Deploy to Cimian payload
-if ($Deploy) {
+# Package with cimipkg
+if ($Pkg) {
     Write-Host ''
-    Write-Log 'Deploying to Cimian payload...' 'INFO'
+    Write-Log 'Building .pkg packages with cimipkg...' 'INFO'
 
-    # Auto-detect Cimian repo path
-    if (-not $CimianPayloadPath) {
-        $candidatePaths = @(
-            (Join-Path (Split-Path $RootDir -Parent) 'Cimian' 'packages' 'ManageUsers' 'payload' 'ProgramData' 'Management' 'Scripts'),
-            (Join-Path $env:USERPROFILE 'DevOps' 'Cimian' 'packages' 'ManageUsers' 'payload' 'ProgramData' 'Management' 'Scripts')
-        )
-        foreach ($candidate in $candidatePaths) {
-            if (Test-Path (Split-Path $candidate -Parent)) {
-                $CimianPayloadPath = $candidate
-                break
+    $cimipkg = Get-Command cimipkg -ErrorAction SilentlyContinue
+    if (-not $cimipkg) {
+        throw 'cimipkg not found in PATH. Install CimianTools first.'
+    }
+
+    $buildDir = Join-Path $RootDir 'build'
+    if (-not (Test-Path $buildDir)) {
+        New-Item -ItemType Directory -Path $buildDir -Force | Out-Null
+    }
+
+    $buildInfoFile = Join-Path $RootDir 'build-info.yaml'
+    $buildInfoTemplate = Get-Content -Path $buildInfoFile -Raw
+    $payloadDir = Join-Path $RootDir 'payload'
+    $pkgStaging = Join-Path $env:TEMP "manageusers_pkg_$(Get-Date -Format 'yyyyMMddHHmmss')"
+    New-Item -ItemType Directory -Path $pkgStaging -Force | Out-Null
+
+    foreach ($arch in $archs) {
+        $sourceExe = Join-Path $OutputDir $arch 'manageusers.exe'
+        if (-not (Test-Path $sourceExe)) {
+            Write-Log "Binary not found for ${arch}: $sourceExe — skipping" 'WARN'
+            continue
+        }
+
+        # Stamp build-info.yaml with concrete architecture
+        $buildInfoContent = $buildInfoTemplate -replace '\$\{ARCH\}', $arch
+        Set-Content -Path $buildInfoFile -Value $buildInfoContent -Encoding UTF8 -NoNewline
+
+        # Stage payload — only the signed binary
+        if (Test-Path $payloadDir) { Remove-Item $payloadDir -Recurse -Force }
+        New-Item -ItemType Directory -Path $payloadDir -Force | Out-Null
+        Copy-Item -Path $sourceExe -Destination (Join-Path $payloadDir 'manageusers.exe') -Force
+
+        # Run cimipkg
+        Write-Log "Building .pkg for $arch..." 'INFO'
+        & cimipkg $RootDir
+        if ($LASTEXITCODE -ne 0) {
+            Write-Log "cimipkg failed for $arch" 'ERROR'
+        } else {
+            # Rescue .pkg from build/ before next cimipkg run wipes it
+            # cimipkg names it ManageUsers-{version}.pkg; rename to include arch
+            $pkgFile = Get-ChildItem -Path $buildDir -Filter 'ManageUsers-*.pkg' -File |
+                Sort-Object LastWriteTime -Descending | Select-Object -First 1
+            if ($pkgFile) {
+                $archName = $pkgFile.Name -replace '^ManageUsers-', "ManageUsers-${arch}-"
+                $archPath = Join-Path $buildDir $archName
+                Rename-Item -Path $pkgFile.FullName -NewName $archName -Force
+                Move-Item -Path $archPath -Destination $pkgStaging -Force
+                $stagedFile = Get-Item (Join-Path $pkgStaging $archName)
+                Write-Log "Created: $archName ($([math]::Round($stagedFile.Length / 1MB, 2)) MB)" 'SUCCESS'
             }
         }
+
+        # Clean up staged payload
+        Remove-Item $payloadDir -Recurse -Force -ErrorAction SilentlyContinue
     }
 
-    if (-not $CimianPayloadPath) {
-        Write-Log 'Could not auto-detect Cimian payload path. Use -CimianPayloadPath.' 'ERROR'
-    } else {
-        if (-not (Test-Path $CimianPayloadPath)) {
-            New-Item -ItemType Directory -Path $CimianPayloadPath -Force | Out-Null
-        }
+    # Move staged .pkg files back to build/
+    Get-ChildItem -Path $pkgStaging -Filter '*.pkg' -File | Move-Item -Destination $buildDir -Force
+    Remove-Item $pkgStaging -Recurse -Force -ErrorAction SilentlyContinue
 
-        # Deploy architecture-specific binary
-        # For dual-arch packages, default to x64 (Cimian handles arch-specific payloads separately)
-        $deployArch = if ($archs.Count -eq 1) { $archs[0] } else { 'x64' }
-        $sourceExe = Join-Path $OutputDir $deployArch 'manageusers.exe'
-
-        if (Test-Path $sourceExe) {
-            Copy-Item -Path $sourceExe -Destination $CimianPayloadPath -Force
-            Write-Log "Deployed $deployArch binary to: $CimianPayloadPath" 'SUCCESS'
-        } else {
-            Write-Log "Binary not found: $sourceExe" 'ERROR'
-        }
-    }
+    # Restore build-info.yaml template with placeholders
+    Set-Content -Path $buildInfoFile -Value $buildInfoTemplate -Encoding UTF8 -NoNewline
 }
 
 # Summary
@@ -400,6 +428,13 @@ foreach ($arch in $archs) {
         $size = [math]::Round((Get-Item $exe).Length / 1MB, 2)
         $signed = if ($SigningCert) { 'signed' } else { 'unsigned' }
         Write-Host "  $arch : $exe ($size MB, $signed)" -ForegroundColor Cyan
+    }
+}
+if ($Pkg) {
+    $pkgFiles = Get-ChildItem -Path (Join-Path $RootDir 'build') -Filter '*.pkg' -File -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending | Select-Object -First 2
+    foreach ($pkgItem in $pkgFiles) {
+        Write-Host "  pkg  : $($pkgItem.FullName) ($([math]::Round($pkgItem.Length / 1MB, 2)) MB)" -ForegroundColor Green
     }
 }
 Write-Host "  Version: $Version" -ForegroundColor Gray

@@ -1,9 +1,0 @@
-product:
-  name: ManageUsers
-  version: '{{VERSION}}'
-  developer: EmilyCarrU
-  identifier: ca.emilycarru.cimian.ManageUsers
-  description: Manages local user accounts on shared Windows devices by removing inactive accounts based on area/room deletion policies, end-of-term forced deletion, and creation/login-based strategies.
-  architecture: '{{ARCHITECTURE}}'
-install_location: 'C:\Program Files\sbin'
-postinstall_action: script
