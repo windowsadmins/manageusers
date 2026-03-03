@@ -1,3 +1,5 @@
+
+
 using ManageUsers.Models;
 
 namespace ManageUsers.Services;
@@ -119,6 +121,13 @@ public sealed class ManageUsersEngine
         {
             _log.Info($"End-of-term force deletion: {user.Username}");
             return true;
+        }
+
+        // duration_days: -1 means never delete
+        if (policy.DurationDays < 0)
+        {
+            _log.Info($"Never-delete policy: {user.Username} — keep");
+            return false;
         }
 
         var threshold = TimeSpan.FromDays(policy.DurationDays);
