@@ -12,7 +12,9 @@ bld/
 [Ll]og/
 [Ll]ogs/
 build/
-!build/pkg/
+
+# cimipkg staging
+payload/
 
 # Visual Studio
 .vs/
