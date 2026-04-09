@@ -55,12 +55,6 @@ public sealed class ManageUsersEngine
             var users = _enum.GetUserSessions(exclusions);
             _log.Info($"Found {users.Count} non-excluded user(s) to evaluate");
 
-            if (users.Count == 0)
-            {
-                _log.Info("No users to process — exiting");
-                return 0;
-            }
-
             // Repair user states
             _repair.RepairUserStates(users);
 
@@ -92,6 +86,21 @@ public sealed class ManageUsersEngine
                 _log.Info($"Found {orphans.Count} orphaned user(s)");
                 _delete.RemoveOrphanedUsers(orphans, sessions);
                 deletedCount += orphans.Count;
+            }
+
+            // Clean up stale Entra/cached profiles (no local account)
+            var staleProfiles = _enum.GetStaleProfiles(exclusions);
+            if (staleProfiles.Count > 0)
+            {
+                _log.Info($"Found {staleProfiles.Count} stale profile(s) with no local account");
+                foreach (var profile in staleProfiles)
+                {
+                    if (EvaluateStaleProfile(profile, policy, now))
+                    {
+                        if (_delete.RemoveStaleProfile(profile))
+                            deletedCount++;
+                    }
+                }
             }
 
             // Update hidden users on login screen
@@ -157,6 +166,55 @@ public sealed class ManageUsersEngine
                     return true;
                 }
                 _log.Info($"LoginAndCreation: {user.Username} created {creationAge.Days}d ago, last login {(user.LastLogin.HasValue ? $"{loginAge.Days}d ago" : "never")} (threshold {policy.DurationDays}d) — keep");
+                return false;
+            }
+
+            default:
+                return false;
+        }
+    }
+
+    private bool EvaluateStaleProfile(StaleProfileInfo profile, DeletionPolicy policy, DateTime now)
+    {
+        if (policy.ForceTermDeletion)
+        {
+            _log.Info($"End-of-term force deletion: stale profile {profile.FolderName}");
+            return true;
+        }
+
+        if (policy.DurationDays < 0)
+        {
+            _log.Info($"Never-delete policy: stale profile {profile.FolderName} — keep");
+            return false;
+        }
+
+        var threshold = TimeSpan.FromDays(policy.DurationDays);
+
+        switch (policy.Strategy)
+        {
+            case DeletionStrategy.CreationOnly:
+            {
+                var age = now - profile.CreationDate;
+                if (age >= threshold)
+                {
+                    _log.Info($"CreationOnly: stale profile {profile.FolderName} created {age.Days}d ago (threshold {policy.DurationDays}d) — DELETE");
+                    return true;
+                }
+                _log.Info($"CreationOnly: stale profile {profile.FolderName} created {age.Days}d ago (threshold {policy.DurationDays}d) — keep");
+                return false;
+            }
+
+            case DeletionStrategy.LoginAndCreation:
+            {
+                var creationAge = now - profile.CreationDate;
+                var lastUseAge = profile.LastUseTime.HasValue ? now - profile.LastUseTime.Value : TimeSpan.MaxValue;
+
+                if (creationAge >= threshold && lastUseAge >= threshold)
+                {
+                    _log.Info($"LoginAndCreation: stale profile {profile.FolderName} created {creationAge.Days}d ago, last use {(profile.LastUseTime.HasValue ? $"{lastUseAge.Days}d ago" : "never")} (threshold {policy.DurationDays}d) — DELETE");
+                    return true;
+                }
+                _log.Info($"LoginAndCreation: stale profile {profile.FolderName} created {creationAge.Days}d ago, last use {(profile.LastUseTime.HasValue ? $"{lastUseAge.Days}d ago" : "never")} (threshold {policy.DurationDays}d) — keep");
                 return false;
             }
 

@@ -64,6 +64,61 @@ public sealed class UserEnumerationService
         return results;
     }
 
+    /// <summary>
+    /// Finds profile folders in C:\Users that have no corresponding local user account.
+    /// These are typically Entra ID cached profiles that accumulate on shared devices.
+    /// </summary>
+    public List<StaleProfileInfo> GetStaleProfiles(HashSet<string> exclusions)
+    {
+        var results = new List<StaleProfileInfo>();
+        var localUsers = EnumerateLocalUsers();
+        var localUserNames = new HashSet<string>(
+            localUsers.Select(u => u.Name), StringComparer.OrdinalIgnoreCase);
+        var profiles = LoadProfiles();
+
+        var usersDir = @"C:\Users";
+        if (!Directory.Exists(usersDir)) return results;
+
+        foreach (var dir in Directory.GetDirectories(usersDir))
+        {
+            var folderName = Path.GetFileName(dir);
+            if (folderName == null) continue;
+
+            // Skip system folders
+            if (SystemProfileFolders.Contains(folderName)) continue;
+
+            // Skip excluded users
+            if (exclusions.Contains(folderName)) continue;
+
+            // Skip if there's a matching local account
+            if (localUserNames.Contains(folderName)) continue;
+
+            // Find matching registry entry by profile path
+            var profileEntry = profiles.Values.FirstOrDefault(p =>
+                p.LocalPath.Equals(dir, StringComparison.OrdinalIgnoreCase));
+
+            DateTime creationDate;
+            try { creationDate = Directory.GetCreationTime(dir); }
+            catch { creationDate = DateTime.Now; }
+
+            var lastUseTime = profileEntry?.LastUseTime ?? GetFolderLastActivity(dir);
+
+            results.Add(new StaleProfileInfo
+            {
+                FolderName = folderName,
+                ProfilePath = dir,
+                Sid = profileEntry?.Sid,
+                CreationDate = creationDate,
+                LastUseTime = lastUseTime,
+                HasRegistryEntry = profileEntry != null
+            });
+
+            _log.Info($"Stale profile: {folderName} | Created: {creationDate:yyyy-MM-dd} | LastUse: {lastUseTime?.ToString("yyyy-MM-dd") ?? "unknown"} | Registry: {(profileEntry != null ? "yes" : "no")}");
+        }
+
+        return results;
+    }
+
     public List<string> FindOrphanedUsers(HashSet<string> exclusions)
     {
         var orphans = new List<string>();
@@ -270,4 +325,27 @@ public sealed class UserEnumerationService
         public required string LocalPath { get; init; }
         public DateTime? LastUseTime { get; init; }
     }
+
+    #region Stale Profile Helpers
+
+    private static readonly HashSet<string> SystemProfileFolders = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Public", "Default", "Default User", "All Users"
+    };
+
+    private static DateTime? GetFolderLastActivity(string path)
+    {
+        try
+        {
+            // NTUSER.DAT last write time is the best proxy for last interactive use
+            var ntuserDat = Path.Combine(path, "NTUSER.DAT");
+            if (File.Exists(ntuserDat))
+                return File.GetLastWriteTime(ntuserDat);
+
+            return Directory.GetLastWriteTime(path);
+        }
+        catch { return null; }
+    }
+
+    #endregion
 }
