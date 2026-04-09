@@ -4,7 +4,7 @@ namespace ManageUsers.Models;
 /// A profile folder in C:\Users with no corresponding local user account.
 /// Typically an Entra ID cached profile left behind after the user stopped logging in.
 /// </summary>
-public sealed class StaleProfileInfo
+public sealed record StaleProfileInfo
 {
     public required string FolderName { get; init; }
     public required string ProfilePath { get; init; }

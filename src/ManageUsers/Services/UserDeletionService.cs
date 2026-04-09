@@ -129,8 +129,15 @@ public sealed class UserDeletionService
             {
                 using var profileList = Registry.LocalMachine.OpenSubKey(
                     @"SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList", writable: true);
-                profileList?.DeleteSubKeyTree(profile.Sid, throwOnMissingSubKey: false);
-                _log.Info($"Registry entry removed for {profile.FolderName} (SID: {profile.Sid})");
+                if (profileList != null)
+                {
+                    profileList.DeleteSubKeyTree(profile.Sid, throwOnMissingSubKey: false);
+                    _log.Info($"Registry entry removed for {profile.FolderName} (SID: {profile.Sid})");
+                }
+                else
+                {
+                    _log.Warning($"Could not open ProfileList registry key; registry entry was not removed for {profile.FolderName} (SID: {profile.Sid})");
+                }
             }
             catch (Exception ex)
             {
