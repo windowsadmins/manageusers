@@ -20,6 +20,9 @@ param(
     [switch]$AllowUnsigned,
     [switch]$ListCerts,
     [string]$FindCertSubject,
+    # -Pkg retained as an alias so existing automation keeps working;
+    # cimipkg 2026.04.09+ produces .msi output by default.
+    [Alias('Pkg')]
     [switch]$Msi
 )
 
@@ -371,52 +374,58 @@ if ($Msi) {
     $msiStaging = Join-Path $env:TEMP "manageusers_msi_$(Get-Date -Format 'yyyyMMddHHmmss')"
     New-Item -ItemType Directory -Path $msiStaging -Force | Out-Null
 
-    foreach ($arch in $archs) {
-        $sourceExe = Join-Path $OutputDir $arch 'manageusers.exe'
-        if (-not (Test-Path $sourceExe)) {
-            Write-Log "Binary not found for ${arch}: $sourceExe — skipping" 'WARN'
-            continue
-        }
+    # try/finally guarantees build-info.yaml is restored and the temp payload /
+    # staging dirs are cleaned even if a step mid-loop throws.
+    try {
+        foreach ($arch in $archs) {
+            $sourceExe = Join-Path $OutputDir $arch 'manageusers.exe'
+            if (-not (Test-Path $sourceExe)) {
+                Write-Log "Binary not found for ${arch}: $sourceExe — skipping" 'WARN'
+                continue
+            }
 
-        # Stamp build-info.yaml with concrete architecture
-        $buildInfoContent = $buildInfoTemplate -replace '\$\{ARCH\}', $arch
-        Set-Content -Path $buildInfoFile -Value $buildInfoContent -Encoding UTF8 -NoNewline
+            # Stamp build-info.yaml with concrete architecture
+            $buildInfoContent = $buildInfoTemplate -replace '\$\{ARCH\}', $arch
+            Set-Content -Path $buildInfoFile -Value $buildInfoContent -Encoding UTF8 -NoNewline
 
-        # Stage payload — only the signed binary
-        if (Test-Path $payloadDir) { Remove-Item $payloadDir -Recurse -Force }
-        New-Item -ItemType Directory -Path $payloadDir -Force | Out-Null
-        Copy-Item -Path $sourceExe -Destination (Join-Path $payloadDir 'manageusers.exe') -Force
+            # Stage payload — only the signed binary
+            if (Test-Path $payloadDir) { Remove-Item $payloadDir -Recurse -Force }
+            New-Item -ItemType Directory -Path $payloadDir -Force | Out-Null
+            Copy-Item -Path $sourceExe -Destination (Join-Path $payloadDir 'manageusers.exe') -Force
 
-        # Run cimipkg — defaults to .msi in 2026.04.09+
-        Write-Log "Building .msi for $arch..." 'INFO'
-        & cimipkg $RootDir
-        if ($LASTEXITCODE -ne 0) {
-            Write-Log "cimipkg failed for $arch" 'ERROR'
-        } else {
-            # Rescue .msi from build/ before next cimipkg run wipes it
-            # cimipkg names it ManageUsers-{version}.msi; rename to include arch
-            $msiFile = Get-ChildItem -Path $buildDir -Filter 'ManageUsers-*.msi' -File |
-                Sort-Object LastWriteTime -Descending | Select-Object -First 1
-            if ($msiFile) {
-                $archName = $msiFile.Name -replace '^ManageUsers-', "ManageUsers-${arch}-"
-                $archPath = Join-Path $buildDir $archName
-                Rename-Item -Path $msiFile.FullName -NewName $archName -Force
-                Move-Item -Path $archPath -Destination $msiStaging -Force
-                $stagedFile = Get-Item (Join-Path $msiStaging $archName)
-                Write-Log "Created: $archName ($([math]::Round($stagedFile.Length / 1MB, 2)) MB)" 'SUCCESS'
+            # Run cimipkg — defaults to .msi in 2026.04.09+
+            Write-Log "Building .msi for $arch..." 'INFO'
+            & cimipkg $RootDir
+            if ($LASTEXITCODE -ne 0) {
+                Write-Log "cimipkg failed for $arch" 'ERROR'
+            } else {
+                # Rescue .msi from build/ before next cimipkg run wipes it
+                # cimipkg names it ManageUsers-{version}.msi; rename to include arch
+                $msiFile = Get-ChildItem -Path $buildDir -Filter 'ManageUsers-*.msi' -File |
+                    Sort-Object LastWriteTime -Descending | Select-Object -First 1
+                if ($msiFile) {
+                    $archName = $msiFile.Name -replace '^ManageUsers-', "ManageUsers-${arch}-"
+                    $archPath = Join-Path $buildDir $archName
+                    Rename-Item -Path $msiFile.FullName -NewName $archName -Force
+                    Move-Item -Path $archPath -Destination $msiStaging -Force
+                    $stagedFile = Get-Item (Join-Path $msiStaging $archName)
+                    Write-Log "Created: $archName ($([math]::Round($stagedFile.Length / 1MB, 2)) MB)" 'SUCCESS'
+                }
             }
         }
 
-        # Clean up staged payload
-        Remove-Item $payloadDir -Recurse -Force -ErrorAction SilentlyContinue
+        # Move staged .msi files back to build/ (happy-path only; finally handles cleanup)
+        Get-ChildItem -Path $msiStaging -Filter '*.msi' -File -ErrorAction SilentlyContinue |
+            Move-Item -Destination $buildDir -Force
     }
-
-    # Move staged .msi files back to build/
-    Get-ChildItem -Path $msiStaging -Filter '*.msi' -File | Move-Item -Destination $buildDir -Force
-    Remove-Item $msiStaging -Recurse -Force -ErrorAction SilentlyContinue
-
-    # Restore build-info.yaml template with placeholders
-    Set-Content -Path $buildInfoFile -Value $buildInfoTemplate -Encoding UTF8 -NoNewline
+    finally {
+        # Always restore the template and remove temp dirs, even if a step above threw.
+        if (Test-Path $buildInfoFile) {
+            Set-Content -Path $buildInfoFile -Value $buildInfoTemplate -Encoding UTF8 -NoNewline
+        }
+        Remove-Item $payloadDir -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item $msiStaging -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }
 
 # Summary
