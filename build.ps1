@@ -4,7 +4,7 @@
 #
 # Examples:
 #   .\build.ps1                          # Build + sign for both architectures (default)
-#   .\build.ps1 -Pkg                     # Build, sign, and create .pkg with cimipkg
+#   .\build.ps1 -Msi                     # Build, sign, and create .msi with cimipkg
 #   .\build.ps1 -Thumbprint "ABC123..."  # Build with specific certificate
 #   .\build.ps1 -AllowUnsigned           # Development build without signing (NOT for production)
 #   .\build.ps1 -Architecture arm64      # Build single architecture
@@ -20,7 +20,7 @@ param(
     [switch]$AllowUnsigned,
     [switch]$ListCerts,
     [string]$FindCertSubject,
-    [switch]$Pkg
+    [switch]$Msi
 )
 
 $ErrorActionPreference = 'Stop'
@@ -248,7 +248,7 @@ Write-Host '=== ManageUsers Build ===' -ForegroundColor Magenta
 Write-Host "Version:       $Version" -ForegroundColor Yellow
 Write-Host "Architecture:  $Architecture" -ForegroundColor Yellow
 Write-Host "Code Signing:  $(if ($AllowUnsigned) { 'DISABLED (dev only)' } else { 'REQUIRED' })" -ForegroundColor $(if ($AllowUnsigned) { 'Red' } else { 'Green' })
-Write-Host "Package:       $(if ($Pkg) { 'YES (.pkg via cimipkg)' } else { 'No' })" -ForegroundColor $(if ($Pkg) { 'Green' } else { 'Gray' })
+Write-Host "Package:       $(if ($Msi) { 'YES (.msi via cimipkg)' } else { 'No' })" -ForegroundColor $(if ($Msi) { 'Green' } else { 'Gray' })
 if ($AllowUnsigned) {
     Write-Host ''
     Write-Host 'WARNING: Unsigned build - NOT suitable for production deployment' -ForegroundColor Red
@@ -350,10 +350,10 @@ if ($SigningCert) {
     }
 }
 
-# Package with cimipkg
-if ($Pkg) {
+# Package with cimipkg (new cimipkg defaults to .msi output)
+if ($Msi) {
     Write-Host ''
-    Write-Log 'Building .pkg packages with cimipkg...' 'INFO'
+    Write-Log 'Building .msi packages with cimipkg...' 'INFO'
 
     $cimipkg = Get-Command cimipkg -ErrorAction SilentlyContinue
     if (-not $cimipkg) {
@@ -368,8 +368,8 @@ if ($Pkg) {
     $buildInfoFile = Join-Path $RootDir 'build-info.yaml'
     $buildInfoTemplate = Get-Content -Path $buildInfoFile -Raw
     $payloadDir = Join-Path $RootDir 'payload'
-    $pkgStaging = Join-Path $env:TEMP "manageusers_pkg_$(Get-Date -Format 'yyyyMMddHHmmss')"
-    New-Item -ItemType Directory -Path $pkgStaging -Force | Out-Null
+    $msiStaging = Join-Path $env:TEMP "manageusers_msi_$(Get-Date -Format 'yyyyMMddHHmmss')"
+    New-Item -ItemType Directory -Path $msiStaging -Force | Out-Null
 
     foreach ($arch in $archs) {
         $sourceExe = Join-Path $OutputDir $arch 'manageusers.exe'
@@ -387,22 +387,22 @@ if ($Pkg) {
         New-Item -ItemType Directory -Path $payloadDir -Force | Out-Null
         Copy-Item -Path $sourceExe -Destination (Join-Path $payloadDir 'manageusers.exe') -Force
 
-        # Run cimipkg
-        Write-Log "Building .pkg for $arch..." 'INFO'
+        # Run cimipkg — defaults to .msi in 2026.04.09+
+        Write-Log "Building .msi for $arch..." 'INFO'
         & cimipkg $RootDir
         if ($LASTEXITCODE -ne 0) {
             Write-Log "cimipkg failed for $arch" 'ERROR'
         } else {
-            # Rescue .pkg from build/ before next cimipkg run wipes it
-            # cimipkg names it ManageUsers-{version}.pkg; rename to include arch
-            $pkgFile = Get-ChildItem -Path $buildDir -Filter 'ManageUsers-*.pkg' -File |
+            # Rescue .msi from build/ before next cimipkg run wipes it
+            # cimipkg names it ManageUsers-{version}.msi; rename to include arch
+            $msiFile = Get-ChildItem -Path $buildDir -Filter 'ManageUsers-*.msi' -File |
                 Sort-Object LastWriteTime -Descending | Select-Object -First 1
-            if ($pkgFile) {
-                $archName = $pkgFile.Name -replace '^ManageUsers-', "ManageUsers-${arch}-"
+            if ($msiFile) {
+                $archName = $msiFile.Name -replace '^ManageUsers-', "ManageUsers-${arch}-"
                 $archPath = Join-Path $buildDir $archName
-                Rename-Item -Path $pkgFile.FullName -NewName $archName -Force
-                Move-Item -Path $archPath -Destination $pkgStaging -Force
-                $stagedFile = Get-Item (Join-Path $pkgStaging $archName)
+                Rename-Item -Path $msiFile.FullName -NewName $archName -Force
+                Move-Item -Path $archPath -Destination $msiStaging -Force
+                $stagedFile = Get-Item (Join-Path $msiStaging $archName)
                 Write-Log "Created: $archName ($([math]::Round($stagedFile.Length / 1MB, 2)) MB)" 'SUCCESS'
             }
         }
@@ -411,9 +411,9 @@ if ($Pkg) {
         Remove-Item $payloadDir -Recurse -Force -ErrorAction SilentlyContinue
     }
 
-    # Move staged .pkg files back to build/
-    Get-ChildItem -Path $pkgStaging -Filter '*.pkg' -File | Move-Item -Destination $buildDir -Force
-    Remove-Item $pkgStaging -Recurse -Force -ErrorAction SilentlyContinue
+    # Move staged .msi files back to build/
+    Get-ChildItem -Path $msiStaging -Filter '*.msi' -File | Move-Item -Destination $buildDir -Force
+    Remove-Item $msiStaging -Recurse -Force -ErrorAction SilentlyContinue
 
     # Restore build-info.yaml template with placeholders
     Set-Content -Path $buildInfoFile -Value $buildInfoTemplate -Encoding UTF8 -NoNewline
@@ -430,11 +430,11 @@ foreach ($arch in $archs) {
         Write-Host "  $arch : $exe ($size MB, $signed)" -ForegroundColor Cyan
     }
 }
-if ($Pkg) {
-    $pkgFiles = Get-ChildItem -Path (Join-Path $RootDir 'build') -Filter '*.pkg' -File -ErrorAction SilentlyContinue |
+if ($Msi) {
+    $msiFiles = Get-ChildItem -Path (Join-Path $RootDir 'build') -Filter '*.msi' -File -ErrorAction SilentlyContinue |
         Sort-Object LastWriteTime -Descending | Select-Object -First 2
-    foreach ($pkgItem in $pkgFiles) {
-        Write-Host "  pkg  : $($pkgItem.FullName) ($([math]::Round($pkgItem.Length / 1MB, 2)) MB)" -ForegroundColor Green
+    foreach ($msiItem in $msiFiles) {
+        Write-Host "  msi  : $($msiItem.FullName) ($([math]::Round($msiItem.Length / 1MB, 2)) MB)" -ForegroundColor Green
     }
 }
 Write-Host "  Version: $Version" -ForegroundColor Gray
