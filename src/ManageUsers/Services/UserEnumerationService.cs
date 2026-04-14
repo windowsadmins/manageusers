@@ -64,6 +64,141 @@ public sealed class UserEnumerationService
         return results;
     }
 
+    /// <summary>
+    /// Finds profile folders in C:\Users that have no corresponding local user account.
+    /// These are typically Entra ID cached profiles that accumulate on shared devices.
+    ///
+    /// Matching strategy: build the set of SIDs for every local account, then walk
+    /// ProfileList and collect the LocalPath of any entry whose SID is in that set.
+    /// Anything in C:\Users not in that path set (and not a system folder / exclusion)
+    /// is a stale candidate. This avoids the naive foldername-equals-username match
+    /// which would misclassify collision-suffixed profile directories (e.g.
+    /// "jsmith.ECU" for local account "jsmith").
+    /// </summary>
+    public List<StaleProfileInfo> GetStaleProfiles(HashSet<string> exclusions)
+    {
+        var results = new List<StaleProfileInfo>();
+
+        // SIDs of every local account (enabled or disabled — we don't want to delete
+        // a disabled local user's profile by accident).
+        var localUsers = EnumerateLocalUsers();
+        var localUserSids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var localUserNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (name, _) in localUsers)
+        {
+            localUserNames.Add(name);
+            var sid = ResolveSid(name);
+            if (!string.IsNullOrEmpty(sid))
+                localUserSids.Add(sid);
+        }
+
+        // Pre-index ProfileList by normalized LocalPath so the join below is O(1)
+        // and tolerant of env-var / trailing-separator variation in ProfileImagePath.
+        var profiles = LoadProfiles();
+        var profilesByNormalizedPath = new Dictionary<string, ProfileInfo>(StringComparer.OrdinalIgnoreCase);
+        foreach (var profile in profiles.Values)
+        {
+            var key = NormalizeProfilePath(profile.LocalPath);
+            if (!string.IsNullOrEmpty(key))
+                profilesByNormalizedPath[key] = profile;
+        }
+
+        // Paths owned by real local accounts — these are NOT stale, even if the
+        // folder name differs from the account name (collision suffixes, casing, etc).
+        var localUserProfilePaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var profile in profiles.Values)
+        {
+            if (localUserSids.Contains(profile.Sid))
+            {
+                var key = NormalizeProfilePath(profile.LocalPath);
+                if (!string.IsNullOrEmpty(key))
+                    localUserProfilePaths.Add(key);
+            }
+        }
+
+        var usersDir = @"C:\Users";
+        if (!Directory.Exists(usersDir)) return results;
+
+        foreach (var dir in Directory.GetDirectories(usersDir))
+        {
+            var folderName = Path.GetFileName(dir);
+            if (folderName == null) continue;
+
+            // Skip system folders
+            if (SystemProfileFolders.Contains(folderName)) continue;
+
+            // Skip excluded users
+            if (exclusions.Contains(folderName)) continue;
+
+            var normalizedDir = NormalizeProfilePath(dir);
+
+            // Skip if this path is owned by a real local account (via ProfileList).
+            if (localUserProfilePaths.Contains(normalizedDir)) continue;
+
+            // Fallback: folder-name match for local users that have no ProfileList
+            // entry yet (brand-new accounts that haven't logged in). Safer than
+            // deleting someone's home dir due to a missing registry join.
+            if (localUserNames.Contains(folderName)) continue;
+
+            // Look up any ProfileList entry for this directory (helps surface the SID
+            // for registry cleanup even when no local user owns it).
+            profilesByNormalizedPath.TryGetValue(normalizedDir, out var profileEntry);
+
+            DateTime creationDate;
+            try
+            {
+                creationDate = Directory.GetCreationTime(dir);
+            }
+            catch (Exception ex)
+            {
+                _log.Warning($"Could not get creation time for profile folder '{dir}': {ex.Message}. Falling back to last write time.");
+                try
+                {
+                    creationDate = Directory.GetLastWriteTime(dir);
+                }
+                catch (Exception fallbackEx)
+                {
+                    _log.Warning($"Could not get last write time for '{dir}' either: {fallbackEx.Message}. Using DateTime.Now — policy evaluation may be inaccurate.");
+                    creationDate = DateTime.Now;
+                }
+            }
+
+            var lastUseTime = profileEntry?.LastUseTime ?? GetFolderLastActivity(dir);
+
+            results.Add(new StaleProfileInfo
+            {
+                FolderName = folderName,
+                ProfilePath = dir,
+                Sid = profileEntry?.Sid,
+                CreationDate = creationDate,
+                LastUseTime = lastUseTime,
+                HasRegistryEntry = profileEntry != null
+            });
+
+            _log.Info($"Stale profile: {folderName} | Created: {creationDate:yyyy-MM-dd} | LastUse: {lastUseTime?.ToString("yyyy-MM-dd") ?? "unknown"} | Registry: {(profileEntry != null ? "yes" : "no")}");
+        }
+
+        return results;
+    }
+
+    /// <summary>
+    /// Normalize a profile path for comparison: expand env vars, resolve to a
+    /// canonical full path, and trim trailing separators. Returns empty on failure.
+    /// </summary>
+    private static string NormalizeProfilePath(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return string.Empty;
+        try
+        {
+            var expanded = Environment.ExpandEnvironmentVariables(path);
+            return Path.GetFullPath(expanded).TrimEnd('\\', '/');
+        }
+        catch
+        {
+            return string.Empty;
+        }
+    }
+
     public List<string> FindOrphanedUsers(HashSet<string> exclusions)
     {
         var orphans = new List<string>();
@@ -270,4 +405,27 @@ public sealed class UserEnumerationService
         public required string LocalPath { get; init; }
         public DateTime? LastUseTime { get; init; }
     }
+
+    #region Stale Profile Helpers
+
+    private static readonly HashSet<string> SystemProfileFolders = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Public", "Default", "Default User", "All Users"
+    };
+
+    private static DateTime? GetFolderLastActivity(string path)
+    {
+        try
+        {
+            // NTUSER.DAT last write time is the best proxy for last interactive use
+            var ntuserDat = Path.Combine(path, "NTUSER.DAT");
+            if (File.Exists(ntuserDat))
+                return File.GetLastWriteTime(ntuserDat);
+
+            return Directory.GetLastWriteTime(path);
+        }
+        catch { return null; }
+    }
+
+    #endregion
 }
