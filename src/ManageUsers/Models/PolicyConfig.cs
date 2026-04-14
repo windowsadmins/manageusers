@@ -7,6 +7,9 @@ namespace ManageUsers.Models;
 /// </summary>
 public sealed class PolicyConfig
 {
+    [YamlMember(Alias = "exclusions")]
+    public List<string> Exclusions { get; set; } = [];
+
     [YamlMember(Alias = "policies")]
     public List<PolicyRule> Policies { get; set; } = [];
 
