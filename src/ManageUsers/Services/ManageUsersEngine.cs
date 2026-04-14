@@ -11,6 +11,7 @@ public sealed class ManageUsersEngine
 {
     private readonly LogService _log;
     private readonly ConfigService _config;
+    private readonly PolicyConfig _policyConfig;
     private readonly PolicyService _policy;
     private readonly UserEnumerationService _enum;
     private readonly UserDeletionService _delete;
@@ -24,8 +25,8 @@ public sealed class ManageUsersEngine
         _force = force;
         _log = new LogService();
         _config = new ConfigService(_log, inventoryPath);
-        var policyConfig = _config.LoadPolicyConfig();
-        _policy = new PolicyService(_log, policyConfig);
+        _policyConfig = _config.LoadPolicyConfig();
+        _policy = new PolicyService(_log, _policyConfig);
         _enum = new UserEnumerationService(_log);
         _delete = new UserDeletionService(_log, _config, simulate);
         _repair = new RepairService(_log);
@@ -43,7 +44,7 @@ public sealed class ManageUsersEngine
             // Load configuration
             var sessions = _config.LoadSessions();
             var inventory = _config.LoadInventory();
-            var exclusions = _config.GetEffectiveExclusions(sessions);
+            var exclusions = _config.GetEffectiveExclusions(sessions, _policyConfig.Exclusions);
 
             _log.Info($"Exclusions loaded: {exclusions.Count} users");
             _log.Info($"Inventory: area={inventory.Area}, location={inventory.Location}, usage={inventory.Usage}");

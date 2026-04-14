@@ -18,6 +18,11 @@ Designed for enterprise environments with 10,000+ devices managed by [Cimian](ht
 All deletion policies are defined in `C:\ProgramData\Management\ManageUsers\Config.yaml`. Rules are evaluated in order — first match wins. Area and room values are regex patterns matched against inventory.
 
 ```yaml
+exclusions:
+  - svc-admin
+  - svc-helpdesk
+  - kiosk-user
+
 policies:
   - name: "Kiosk Labs"
     match:
@@ -29,7 +34,7 @@ policies:
   - name: "Studio Labs"
     match:
       area: "Studio|Workshop"
-      room: "B1110|D3360"
+      room: "A200|C310"
     duration_days: 30
     strategy: creation_only
     force_at_end_of_term: false
@@ -37,7 +42,7 @@ policies:
   - name: "Assigned Labs"
     match:
       area: "Classroom|Lab"
-      room: "B1122|B4120"
+      room: "D105|E220"
     duration_days: 42
     strategy: login_and_creation
     force_at_end_of_term: true
@@ -68,37 +73,47 @@ end_of_term_dates:
 `C:\ProgramData\Management\Inventory.yaml` — written by your enrollment system:
 ```yaml
 area: "Studio"
-location: "B1110"
+location: "A200"
 usage: "Shared"
 ```
 
 You can override this path at runtime with `--inventory <path>`.
 
+### Exclusions
+
+Exclusions are merged from three sources (all case-insensitive):
+
+1. **Built-in** — Administrator, DefaultAccount, Guest, WDAGUtilityAccount, defaultuser0 (hardcoded in `AppConstants.cs`)
+2. **Config.yaml `exclusions:`** — fleet-wide service accounts deployed via Cimian (e.g. `svc-admin`, `svc-helpdesk`)
+3. **Sessions.yaml `Exclusions:`** — machine-specific overrides, editable locally
+
+The currently logged-in console user is also excluded automatically.
+
 ### Sessions
-`C:\ProgramData\Management\ManageUsers\Sessions.yaml` — exclusions and deferred state:
+`C:\ProgramData\Management\ManageUsers\Sessions.yaml` — machine-specific exclusions and deferred state:
 ```yaml
 Exclusions:
-  - svc-account
-  - lab-admin
+  - local-svc-account
 DeferredDeletes: []
 ```
-
-Built-in Windows accounts (Administrator, DefaultAccount, Guest, WDAGUtilityAccount, defaultuser0) are always excluded automatically.
 
 ## Building
 
 ```pwsh
-# Build and sign for both architectures
-.\build.ps1 -Sign
+# Build, sign, and package .msi for both architectures (default)
+.\build.ps1
 
 # Build arm64 only
-.\build.ps1 -Sign -Architecture arm64
+.\build.ps1 -Architecture arm64
 
-# Deploy signed binaries to Cimian payload
-.\build.ps1 -Sign -Deploy
+# Package existing binaries into .msi (skip dotnet build)
+.\build.ps1 -Msi
+
+# Also create .nupkg (Chocolatey) packages
+.\build.ps1 -Nupkg
 ```
 
-Produces `release/x64/manageusers.exe` and `release/arm64/manageusers.exe`.
+Produces `release/x64/manageusers.exe`, `release/arm64/manageusers.exe`, and per-arch `.msi` packages in `build/`.
 
 ## Usage
 
@@ -121,7 +136,7 @@ manageusers.exe --version
 
 ## Scheduling
 
-Deployed via Cimian as a `.pkg` package. The postinstall script registers a scheduled task:
+Deployed via Cimian as a `.msi` package. The postinstall script registers a scheduled task:
 - Runs as SYSTEM
 - Daily at 3:00 AM + at startup
 - Action: `C:\Program Files\sbin\manageusers.exe`
@@ -132,13 +147,9 @@ Deployed via Cimian as a `.pkg` package. The postinstall script registers a sche
 ManageUsers/
 ├── build.ps1                         # Build + sign script
 ├── ManageUsers.sln
-├── build/pkg/                        # Cimian packaging files
-│   ├── build-info.yaml
-│   ├── Config.yaml.template
-│   ├── postinstall.ps1
-│   ├── preinstall.ps1
-│   └── Sessions.yaml.template
-├── deploy/                           # Cimian pkgsinfo manifests
+├── build-info.yaml                   # cimipkg package metadata
+├── scripts/                          # Install/uninstall scripts
+│   └── postinstall.ps1
 └── src/ManageUsers/
     ├── ManageUsers.csproj
     ├── app.manifest
@@ -157,5 +168,5 @@ ManageUsers/
         ├── PolicyService.cs          # Config-driven policy evaluation
         ├── RepairService.cs          # Orphan repair + hidden user registry
         ├── UserDeletionService.cs    # Core deletion + deferred processing
-        └── UserEnumerationService.cs # WMI user/profile enumeration
+        └── UserEnumerationService.cs # Win32 user/profile enumeration
 ```

@@ -3,10 +3,13 @@ using YamlDotNet.Serialization;
 namespace ManageUsers.Models;
 
 /// <summary>
-/// Top-level Config.yaml model — defines policy rules and end-of-term dates.
+/// Top-level Config.yaml model — defines exclusions, policy rules, and end-of-term dates.
 /// </summary>
 public sealed class PolicyConfig
 {
+    [YamlMember(Alias = "exclusions")]
+    public List<string> Exclusions { get; set; } = [];
+
     [YamlMember(Alias = "policies")]
     public List<PolicyRule> Policies { get; set; } = [];
 

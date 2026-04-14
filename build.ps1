@@ -3,8 +3,9 @@
 # Builds, signs, and packages ManageUsers binary for Cimian deployment
 #
 # Examples:
-#   .\build.ps1                          # Build + sign for both architectures (default)
-#   .\build.ps1 -Pkg                     # Build, sign, and create .pkg with cimipkg
+#   .\build.ps1                          # Build, sign, and create .msi (default)
+#   .\build.ps1 -Msi                     # Package existing binaries into .msi (skip build)
+#   .\build.ps1 -Nupkg                   # Also create .nupkg (Chocolatey) packages
 #   .\build.ps1 -Thumbprint "ABC123..."  # Build with specific certificate
 #   .\build.ps1 -AllowUnsigned           # Development build without signing (NOT for production)
 #   .\build.ps1 -Architecture arm64      # Build single architecture
@@ -20,7 +21,8 @@ param(
     [switch]$AllowUnsigned,
     [switch]$ListCerts,
     [string]$FindCertSubject,
-    [switch]$Pkg
+    [switch]$Msi,
+    [switch]$Nupkg
 )
 
 $ErrorActionPreference = 'Stop'
@@ -247,9 +249,13 @@ Write-Host ''
 Write-Host '=== ManageUsers Build ===' -ForegroundColor Magenta
 Write-Host "Version:       $Version" -ForegroundColor Yellow
 Write-Host "Architecture:  $Architecture" -ForegroundColor Yellow
-Write-Host "Code Signing:  $(if ($AllowUnsigned) { 'DISABLED (dev only)' } else { 'REQUIRED' })" -ForegroundColor $(if ($AllowUnsigned) { 'Red' } else { 'Green' })
-Write-Host "Package:       $(if ($Pkg) { 'YES (.pkg via cimipkg)' } else { 'No' })" -ForegroundColor $(if ($Pkg) { 'Green' } else { 'Gray' })
-if ($AllowUnsigned) {
+Write-Host "Code Signing:  $(if ($Msi -or $AllowUnsigned) { 'DISABLED' } else { 'REQUIRED' })" -ForegroundColor $(if ($Msi -or $AllowUnsigned) { 'Gray' } else { 'Green' })
+Write-Host "Package:       .msi$(if ($Nupkg) { ' + .nupkg' } else { '' }) via cimipkg" -ForegroundColor Green
+if ($Msi) {
+    Write-Host ''
+    Write-Host 'Package-only mode — using existing binaries from release/' -ForegroundColor Yellow
+}
+if ($AllowUnsigned -and -not $Msi) {
     Write-Host ''
     Write-Host 'WARNING: Unsigned build - NOT suitable for production deployment' -ForegroundColor Red
 }
@@ -257,7 +263,7 @@ Write-Host ''
 
 # Auto-detect signing certificate
 $SigningCert = $null
-if (-not $AllowUnsigned) {
+if (-not $AllowUnsigned -and -not $Msi) {
     if ($Thumbprint) {
         $stores = @('Cert:\CurrentUser\My', 'Cert:\LocalMachine\My')
         foreach ($store in $stores) {
@@ -282,6 +288,13 @@ if (-not $AllowUnsigned) {
     Test-SignTool
 }
 
+# Resolve architectures
+$archs = if ($Architecture -eq 'both') { @('x64', 'arm64') } else { @($Architecture) }
+$runtimeMap = @{ 'x64' = 'win-x64'; 'arm64' = 'win-arm64' }
+
+# Skip build + sign when -Msi (package-only mode)
+if (-not $Msi) {
+
 # Clean
 if ($Clean) {
     if (Test-Path $OutputDir) {
@@ -297,10 +310,6 @@ if ($Clean) {
         if (Test-Path $p) { Remove-Item $p -Recurse -Force }
     }
 }
-
-# Resolve architectures
-$archs = if ($Architecture -eq 'both') { @('x64', 'arm64') } else { @($Architecture) }
-$runtimeMap = @{ 'x64' = 'win-x64'; 'arm64' = 'win-arm64' }
 
 # Build each architecture
 foreach ($arch in $archs) {
@@ -350,74 +359,90 @@ if ($SigningCert) {
     }
 }
 
-# Package with cimipkg
-if ($Pkg) {
-    Write-Host ''
-    Write-Log 'Building .pkg packages with cimipkg...' 'INFO'
+} # end if (-not $Msi)
 
-    $cimipkg = Get-Command cimipkg -ErrorAction SilentlyContinue
-    if (-not $cimipkg) {
-        throw 'cimipkg not found in PATH. Install CimianTools first.'
+# Package with cimipkg (always builds .msi, optionally .nupkg with -Nupkg)
+Write-Host ''
+Write-Log "Building .msi$(if ($Nupkg) { ' + .nupkg' }) packages with cimipkg..." 'INFO'
+
+$cimipkg = Get-Command cimipkg -ErrorAction SilentlyContinue
+if (-not $cimipkg) {
+    throw 'cimipkg not found in PATH. Install CimianTools first.'
+}
+
+$buildDir = Join-Path $RootDir 'build'
+if (-not (Test-Path $buildDir)) {
+    New-Item -ItemType Directory -Path $buildDir -Force | Out-Null
+}
+
+$buildInfoFile = Join-Path $RootDir 'build-info.yaml'
+$buildInfoTemplate = Get-Content -Path $buildInfoFile -Raw
+$payloadDir = Join-Path $RootDir 'payload'
+$pkgStaging = Join-Path $env:TEMP "manageusers_pkg_$(Get-Date -Format 'yyyyMMddHHmmss')"
+New-Item -ItemType Directory -Path $pkgStaging -Force | Out-Null
+
+foreach ($arch in $archs) {
+    $sourceExe = Join-Path $OutputDir $arch 'manageusers.exe'
+    if (-not (Test-Path $sourceExe)) {
+        Write-Log "Binary not found for ${arch}: $sourceExe — skipping" 'WARN'
+        continue
     }
 
-    $buildDir = Join-Path $RootDir 'build'
-    if (-not (Test-Path $buildDir)) {
-        New-Item -ItemType Directory -Path $buildDir -Force | Out-Null
-    }
+    # Stamp build-info.yaml with concrete architecture
+    $buildInfoContent = $buildInfoTemplate -replace '\$\{ARCH\}', $arch
+    Set-Content -Path $buildInfoFile -Value $buildInfoContent -Encoding UTF8 -NoNewline
 
-    $buildInfoFile = Join-Path $RootDir 'build-info.yaml'
-    $buildInfoTemplate = Get-Content -Path $buildInfoFile -Raw
-    $payloadDir = Join-Path $RootDir 'payload'
-    $pkgStaging = Join-Path $env:TEMP "manageusers_pkg_$(Get-Date -Format 'yyyyMMddHHmmss')"
-    New-Item -ItemType Directory -Path $pkgStaging -Force | Out-Null
+    # Stage payload — only the signed binary
+    if (Test-Path $payloadDir) { Remove-Item $payloadDir -Recurse -Force }
+    New-Item -ItemType Directory -Path $payloadDir -Force | Out-Null
+    Copy-Item -Path $sourceExe -Destination (Join-Path $payloadDir 'manageusers.exe') -Force
 
-    foreach ($arch in $archs) {
-        $sourceExe = Join-Path $OutputDir $arch 'manageusers.exe'
-        if (-not (Test-Path $sourceExe)) {
-            Write-Log "Binary not found for ${arch}: $sourceExe — skipping" 'WARN'
-            continue
+    # Build .msi
+    Write-Log "Building .msi for $arch..." 'INFO'
+    & cimipkg $RootDir
+    if ($LASTEXITCODE -ne 0) {
+        Write-Log "cimipkg .msi failed for $arch" 'ERROR'
+    } else {
+        $msiFile = Get-ChildItem -Path $buildDir -Filter 'ManageUsers-*.msi' -File |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        if ($msiFile) {
+            $archName = $msiFile.Name -replace '^ManageUsers-', "ManageUsers-${arch}-"
+            Rename-Item -Path $msiFile.FullName -NewName $archName -Force
+            Move-Item -Path (Join-Path $buildDir $archName) -Destination $pkgStaging -Force
+            $stagedFile = Get-Item (Join-Path $pkgStaging $archName)
+            Write-Log "Created: $archName ($([math]::Round($stagedFile.Length / 1MB, 2)) MB)" 'SUCCESS'
         }
+    }
 
-        # Stamp build-info.yaml with concrete architecture
-        $buildInfoContent = $buildInfoTemplate -replace '\$\{ARCH\}', $arch
-        Set-Content -Path $buildInfoFile -Value $buildInfoContent -Encoding UTF8 -NoNewline
-
-        # Stage payload — only the signed binary
-        if (Test-Path $payloadDir) { Remove-Item $payloadDir -Recurse -Force }
-        New-Item -ItemType Directory -Path $payloadDir -Force | Out-Null
-        Copy-Item -Path $sourceExe -Destination (Join-Path $payloadDir 'manageusers.exe') -Force
-
-        # Run cimipkg
-        Write-Log "Building .pkg for $arch..." 'INFO'
-        & cimipkg $RootDir
+    # Build .nupkg if requested
+    if ($Nupkg) {
+        Write-Log "Building .nupkg for $arch..." 'INFO'
+        & cimipkg --nupkg $RootDir
         if ($LASTEXITCODE -ne 0) {
-            Write-Log "cimipkg failed for $arch" 'ERROR'
+            Write-Log "cimipkg .nupkg failed for $arch" 'ERROR'
         } else {
-            # Rescue .pkg from build/ before next cimipkg run wipes it
-            # cimipkg names it ManageUsers-{version}.pkg; rename to include arch
-            $pkgFile = Get-ChildItem -Path $buildDir -Filter 'ManageUsers-*.pkg' -File |
+            $nupkgFile = Get-ChildItem -Path $buildDir -Filter 'ManageUsers-*.nupkg' -File |
                 Sort-Object LastWriteTime -Descending | Select-Object -First 1
-            if ($pkgFile) {
-                $archName = $pkgFile.Name -replace '^ManageUsers-', "ManageUsers-${arch}-"
-                $archPath = Join-Path $buildDir $archName
-                Rename-Item -Path $pkgFile.FullName -NewName $archName -Force
-                Move-Item -Path $archPath -Destination $pkgStaging -Force
+            if ($nupkgFile) {
+                $archName = $nupkgFile.Name -replace '^ManageUsers-', "ManageUsers-${arch}-"
+                Rename-Item -Path $nupkgFile.FullName -NewName $archName -Force
+                Move-Item -Path (Join-Path $buildDir $archName) -Destination $pkgStaging -Force
                 $stagedFile = Get-Item (Join-Path $pkgStaging $archName)
                 Write-Log "Created: $archName ($([math]::Round($stagedFile.Length / 1MB, 2)) MB)" 'SUCCESS'
             }
         }
-
-        # Clean up staged payload
-        Remove-Item $payloadDir -Recurse -Force -ErrorAction SilentlyContinue
     }
 
-    # Move staged .pkg files back to build/
-    Get-ChildItem -Path $pkgStaging -Filter '*.pkg' -File | Move-Item -Destination $buildDir -Force
-    Remove-Item $pkgStaging -Recurse -Force -ErrorAction SilentlyContinue
-
-    # Restore build-info.yaml template with placeholders
-    Set-Content -Path $buildInfoFile -Value $buildInfoTemplate -Encoding UTF8 -NoNewline
+    # Clean up staged payload
+    Remove-Item $payloadDir -Recurse -Force -ErrorAction SilentlyContinue
 }
+
+# Move staged packages back to build/
+Get-ChildItem -Path $pkgStaging -File | Move-Item -Destination $buildDir -Force
+Remove-Item $pkgStaging -Recurse -Force -ErrorAction SilentlyContinue
+
+# Restore build-info.yaml template with placeholders
+Set-Content -Path $buildInfoFile -Value $buildInfoTemplate -Encoding UTF8 -NoNewline
 
 # Summary
 Write-Host ''
@@ -430,11 +455,16 @@ foreach ($arch in $archs) {
         Write-Host "  $arch : $exe ($size MB, $signed)" -ForegroundColor Cyan
     }
 }
-if ($Pkg) {
-    $pkgFiles = Get-ChildItem -Path (Join-Path $RootDir 'build') -Filter '*.pkg' -File -ErrorAction SilentlyContinue |
+$msiFiles = Get-ChildItem -Path (Join-Path $RootDir 'build') -Filter '*.msi' -File -ErrorAction SilentlyContinue |
+    Sort-Object LastWriteTime -Descending | Select-Object -First 2
+foreach ($msiItem in $msiFiles) {
+    Write-Host "  msi  : $($msiItem.FullName) ($([math]::Round($msiItem.Length / 1MB, 2)) MB)" -ForegroundColor Green
+}
+if ($Nupkg) {
+    $nupkgFiles = Get-ChildItem -Path (Join-Path $RootDir 'build') -Filter '*.nupkg' -File -ErrorAction SilentlyContinue |
         Sort-Object LastWriteTime -Descending | Select-Object -First 2
-    foreach ($pkgItem in $pkgFiles) {
-        Write-Host "  pkg  : $($pkgItem.FullName) ($([math]::Round($pkgItem.Length / 1MB, 2)) MB)" -ForegroundColor Green
+    foreach ($nupkgItem in $nupkgFiles) {
+        Write-Host "  nupkg: $($nupkgItem.FullName) ($([math]::Round($nupkgItem.Length / 1MB, 2)) MB)" -ForegroundColor Green
     }
 }
 Write-Host "  Version: $Version" -ForegroundColor Gray
