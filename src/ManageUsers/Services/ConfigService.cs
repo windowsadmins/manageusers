@@ -42,7 +42,9 @@ public sealed class ConfigService
             if (config?.Policies == null || config.Policies.Count == 0)
             {
                 _log.Warning("Config.yaml has no policies defined — using built-in defaults");
-                return GetDefaultPolicyConfig();
+                var defaults = GetDefaultPolicyConfig();
+                defaults.Exclusions = config?.Exclusions ?? [];
+                return defaults;
             }
             _log.Info($"Loaded {config.Policies.Count} policy rule(s) from Config.yaml");
             return config;
@@ -99,7 +101,7 @@ public sealed class ConfigService
     }
 
     /// <summary>
-    /// Returns the merged exclusion set: always-excluded + Sessions.yaml Exclusions + currently logged-in user.
+    /// Returns the merged exclusion set: always-excluded + Config.yaml exclusions + Sessions.yaml exclusions + currently logged-in user.
     /// </summary>
     public HashSet<string> GetEffectiveExclusions(SessionsData sessions, List<string>? configExclusions = null)
     {
