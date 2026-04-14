@@ -106,6 +106,64 @@ public sealed class UserDeletionService
         }
     }
 
+    /// <summary>
+    /// Remove a stale Entra/cached profile — no local account exists, just registry + folder.
+    /// </summary>
+    public bool RemoveStaleProfile(StaleProfileInfo profile)
+    {
+        if (_simulate)
+        {
+            _log.Info($"[SIMULATE] Would remove stale profile: {profile.FolderName}");
+            return true;
+        }
+
+        _log.Info($"Removing stale profile: {profile.FolderName}");
+
+        // Kill any lingering processes owned by this user
+        KillUserProcesses(profile.FolderName);
+
+        // Remove ProfileList registry entry if present
+        if (profile.HasRegistryEntry && profile.Sid != null)
+        {
+            try
+            {
+                using var profileList = Registry.LocalMachine.OpenSubKey(
+                    @"SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList", writable: true);
+                if (profileList != null)
+                {
+                    profileList.DeleteSubKeyTree(profile.Sid, throwOnMissingSubKey: false);
+                    _log.Info($"Registry entry removed for {profile.FolderName} (SID: {profile.Sid})");
+                }
+                else
+                {
+                    _log.Warning($"Could not open ProfileList registry key; registry entry was not removed for {profile.FolderName} (SID: {profile.Sid})");
+                }
+            }
+            catch (Exception ex)
+            {
+                _log.Warning($"Failed to remove registry entry for {profile.FolderName}: {ex.Message}");
+            }
+        }
+
+        // Delete profile folder
+        if (Directory.Exists(profile.ProfilePath))
+        {
+            try
+            {
+                Directory.Delete(profile.ProfilePath, recursive: true);
+                _log.Info($"Profile directory removed: {profile.ProfilePath}");
+            }
+            catch (Exception ex)
+            {
+                _log.Warning($"Failed to remove profile directory {profile.ProfilePath}: {ex.Message}");
+                return false;
+            }
+        }
+
+        _log.Info($"Successfully removed stale profile: {profile.FolderName}");
+        return true;
+    }
+
     private void DeferDelete(string username, SessionsData sessions)
     {
         if (!sessions.DeferredDeletes.Contains(username, StringComparer.OrdinalIgnoreCase))
