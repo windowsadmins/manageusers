@@ -413,27 +413,38 @@ public sealed class UserEnumerationService
         "Public", "Default", "Default User", "All Users"
     };
 
-    // Registry hives get touched by background system tasks (Windows Search,
-    // User Profile Service hive maintenance, AV hive scans) that load every
-    // stale profile on the same day, which makes their LastWriteTime useless
-    // as a proxy for actual user activity. Exclude them.
-    private static readonly HashSet<string> HiveFileNames = new(StringComparer.OrdinalIgnoreCase)
+    // Registry hives and their transactional log/snapshot siblings get touched
+    // by background system tasks (Windows Search, User Profile Service hive
+    // maintenance, AV hive scans) that load every stale profile on the same
+    // day, which makes their LastWriteTime useless as a proxy for actual user
+    // activity. Exclude any file whose name starts with one of these prefixes
+    // — this covers NTUSER.DAT.LOG1/2, UsrClass.dat{GUID}.TMContainer*,
+    // *.regtrans-ms, and friends.
+    private static readonly string[] HiveFileNamePrefixes =
     {
-        "NTUSER.DAT", "ntuser.dat.LOG1", "ntuser.dat.LOG2",
-        "UsrClass.dat", "UsrClass.dat.LOG1", "UsrClass.dat.LOG2"
+        "ntuser.dat", "usrclass.dat"
     };
+
+    private static bool IsHiveFile(string name)
+    {
+        foreach (var prefix in HiveFileNamePrefixes)
+        {
+            if (name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        return false;
+    }
 
     private static DateTime? GetFolderLastActivity(string path)
     {
+        DateTime? latest = null;
+
         try
         {
-            DateTime? latest = null;
-
             foreach (var entry in Directory.EnumerateFileSystemEntries(path))
             {
                 var name = Path.GetFileName(entry);
-                if (HiveFileNames.Contains(name)) continue;
-                if (name.StartsWith("ntuser.dat", StringComparison.OrdinalIgnoreCase)) continue;
+                if (IsHiveFile(name)) continue;
 
                 DateTime mtime;
                 try { mtime = File.GetLastWriteTime(entry); }
@@ -441,9 +452,16 @@ public sealed class UserEnumerationService
 
                 if (latest == null || mtime > latest) latest = mtime;
             }
-
-            return latest ?? Directory.GetLastWriteTime(path);
         }
+        catch
+        {
+            // Enumeration failed (e.g., access denied). Fall through to the
+            // folder-mtime fallback so callers still get a best-effort value.
+        }
+
+        if (latest != null) return latest;
+
+        try { return Directory.GetLastWriteTime(path); }
         catch { return null; }
     }
 
