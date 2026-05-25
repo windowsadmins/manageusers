@@ -413,16 +413,36 @@ public sealed class UserEnumerationService
         "Public", "Default", "Default User", "All Users"
     };
 
+    // Registry hives get touched by background system tasks (Windows Search,
+    // User Profile Service hive maintenance, AV hive scans) that load every
+    // stale profile on the same day, which makes their LastWriteTime useless
+    // as a proxy for actual user activity. Exclude them.
+    private static readonly HashSet<string> HiveFileNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "NTUSER.DAT", "ntuser.dat.LOG1", "ntuser.dat.LOG2",
+        "UsrClass.dat", "UsrClass.dat.LOG1", "UsrClass.dat.LOG2"
+    };
+
     private static DateTime? GetFolderLastActivity(string path)
     {
         try
         {
-            // NTUSER.DAT last write time is the best proxy for last interactive use
-            var ntuserDat = Path.Combine(path, "NTUSER.DAT");
-            if (File.Exists(ntuserDat))
-                return File.GetLastWriteTime(ntuserDat);
+            DateTime? latest = null;
 
-            return Directory.GetLastWriteTime(path);
+            foreach (var entry in Directory.EnumerateFileSystemEntries(path))
+            {
+                var name = Path.GetFileName(entry);
+                if (HiveFileNames.Contains(name)) continue;
+                if (name.StartsWith("ntuser.dat", StringComparison.OrdinalIgnoreCase)) continue;
+
+                DateTime mtime;
+                try { mtime = File.GetLastWriteTime(entry); }
+                catch { continue; }
+
+                if (latest == null || mtime > latest) latest = mtime;
+            }
+
+            return latest ?? Directory.GetLastWriteTime(path);
         }
         catch { return null; }
     }
