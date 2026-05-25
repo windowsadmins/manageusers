@@ -413,17 +413,55 @@ public sealed class UserEnumerationService
         "Public", "Default", "Default User", "All Users"
     };
 
+    // Registry hives and their transactional log/snapshot siblings get touched
+    // by background system tasks (Windows Search, User Profile Service hive
+    // maintenance, AV hive scans) that load every stale profile on the same
+    // day, which makes their LastWriteTime useless as a proxy for actual user
+    // activity. Exclude any file whose name starts with one of these prefixes
+    // — this covers NTUSER.DAT.LOG1/2, UsrClass.dat{GUID}.TMContainer*,
+    // *.regtrans-ms, and friends.
+    private static readonly string[] HiveFileNamePrefixes =
+    {
+        "ntuser.dat", "usrclass.dat"
+    };
+
+    private static bool IsHiveFile(string name)
+    {
+        foreach (var prefix in HiveFileNamePrefixes)
+        {
+            if (name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        return false;
+    }
+
     private static DateTime? GetFolderLastActivity(string path)
     {
+        DateTime? latest = null;
+
         try
         {
-            // NTUSER.DAT last write time is the best proxy for last interactive use
-            var ntuserDat = Path.Combine(path, "NTUSER.DAT");
-            if (File.Exists(ntuserDat))
-                return File.GetLastWriteTime(ntuserDat);
+            foreach (var entry in Directory.EnumerateFileSystemEntries(path))
+            {
+                var name = Path.GetFileName(entry);
+                if (IsHiveFile(name)) continue;
 
-            return Directory.GetLastWriteTime(path);
+                DateTime mtime;
+                try { mtime = File.GetLastWriteTime(entry); }
+                catch { continue; }
+
+                if (latest == null || mtime > latest) latest = mtime;
+            }
         }
+        catch
+        {
+            // Enumeration failed (e.g., access denied). Fall through to the
+            // folder-mtime fallback so callers still get a best-effort value.
+        }
+
+        if (latest != null) return latest;
+
+        try { return Directory.GetLastWriteTime(path); }
         catch { return null; }
     }
 
