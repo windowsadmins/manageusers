@@ -408,7 +408,9 @@ public sealed class UserDeletionService
                     file.Attributes &= ~FileAttributes.ReadOnly;
                 file.Delete();
             }
-            catch (UnauthorizedAccessException) { /* skip locked files; final Delete will surface */ }
+            // Files in use surface as IOException, not UnauthorizedAccessException — accept
+            // both so a single locked file doesn't abort the rest of the tree.
+            catch (Exception ex) when (ex is UnauthorizedAccessException or IOException) { }
         }
 
         foreach (var sub in dirInfo.EnumerateDirectories())
@@ -417,10 +419,11 @@ public sealed class UserDeletionService
             {
                 DeleteProfileDirectory(sub.FullName);
             }
-            catch (UnauthorizedAccessException)
+            // Subtree failures (legacy junctions denying unlink, "directory not empty"
+            // bubbling up from a still-locked file inside) are best-effort: try a raw
+            // unlink and continue past it so one bad child can't abort the whole delete.
+            catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
             {
-                // Legacy junctions (e.g. "Application Data") sometimes deny even the
-                // unlink; try a best-effort raw delete and continue past it.
                 try { sub.Delete(recursive: false); } catch { }
             }
         }
