@@ -150,7 +150,7 @@ public sealed class UserDeletionService
         {
             try
             {
-                Directory.Delete(profile.ProfilePath, recursive: true);
+                DeleteProfileDirectory(profile.ProfilePath);
                 _log.Info($"Profile directory removed: {profile.ProfilePath}");
             }
             catch (Exception ex)
@@ -367,7 +367,7 @@ public sealed class UserDeletionService
         {
             try
             {
-                Directory.Delete(homePath, recursive: true);
+                DeleteProfileDirectory(homePath);
                 _log.Info($"Profile directory removed: {homePath}");
             }
             catch (Exception ex)
@@ -375,6 +375,57 @@ public sealed class UserDeletionService
                 _log.Warning($"Failed to remove profile directory {homePath}: {ex.Message}");
             }
         }
+    }
+
+    /// <summary>
+    /// Recursively delete a user-profile directory. Built-in Directory.Delete(recursive)
+    /// fails on legacy compatibility junctions ("Application Data", "Local Settings",
+    /// "My Documents", etc.) because their ACLs deny enumerate-children. We walk the
+    /// tree manually: reparse points are unlinked without descending, read-only
+    /// attributes are cleared, and unauthorized junction failures are downgraded so a
+    /// single junction can't abort the whole delete.
+    /// </summary>
+    private static void DeleteProfileDirectory(string path)
+    {
+        var dirInfo = new DirectoryInfo(path);
+        if (!dirInfo.Exists) return;
+
+        if ((dirInfo.Attributes & FileAttributes.ReadOnly) != 0)
+            dirInfo.Attributes &= ~FileAttributes.ReadOnly;
+
+        if ((dirInfo.Attributes & FileAttributes.ReparsePoint) != 0)
+        {
+            // Junction/symlink: unlink without recursing.
+            dirInfo.Delete();
+            return;
+        }
+
+        foreach (var file in dirInfo.EnumerateFiles())
+        {
+            try
+            {
+                if ((file.Attributes & FileAttributes.ReadOnly) != 0)
+                    file.Attributes &= ~FileAttributes.ReadOnly;
+                file.Delete();
+            }
+            catch (UnauthorizedAccessException) { /* skip locked files; final Delete will surface */ }
+        }
+
+        foreach (var sub in dirInfo.EnumerateDirectories())
+        {
+            try
+            {
+                DeleteProfileDirectory(sub.FullName);
+            }
+            catch (UnauthorizedAccessException)
+            {
+                // Legacy junctions (e.g. "Application Data") sometimes deny even the
+                // unlink; try a best-effort raw delete and continue past it.
+                try { sub.Delete(recursive: false); } catch { }
+            }
+        }
+
+        dirInfo.Delete(recursive: false);
     }
 
     private bool VerifyDeletion(string username)
