@@ -347,7 +347,10 @@ public sealed class UserEnumerationService
 
         foreach (var sidStr in profileList.GetSubKeyNames())
         {
-            if (!sidStr.StartsWith("S-1-5-21-")) continue;
+            // S-1-5-21- = local/AD accounts. S-1-12-1- = Microsoft Entra (Azure AD)
+            // cached profiles, the common case on shared lab devices.
+            if (!sidStr.StartsWith("S-1-5-21-", StringComparison.Ordinal)
+                && !sidStr.StartsWith("S-1-12-1-", StringComparison.Ordinal)) continue;
 
             using var sidKey = profileList.OpenSubKey(sidStr);
             if (sidKey == null) continue;
