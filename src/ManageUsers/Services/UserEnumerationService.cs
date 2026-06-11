@@ -199,6 +199,72 @@ public sealed class UserEnumerationService
         }
     }
 
+    /// <summary>
+    /// Detect internally inconsistent profile state left behind by partial deletions:
+    /// dangling ProfileList entries whose folder is gone, and folders that still have
+    /// a ProfileList entry but lost their NTUSER.DAT. Both states corrupt the next
+    /// logon for that SID (temp profile, explorer "Class not registered"), so the
+    /// engine remediates them regardless of retention policy. Only profiles not owned
+    /// by a local account are considered; loaded hives are skipped by the deleter.
+    /// </summary>
+    public List<StaleProfileInfo> GetCorruptProfiles(HashSet<string> exclusions)
+    {
+        var results = new List<StaleProfileInfo>();
+
+        var localUserSids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (name, _) in EnumerateLocalUsers())
+        {
+            var sid = ResolveSid(name);
+            if (!string.IsNullOrEmpty(sid))
+                localUserSids.Add(sid);
+        }
+
+        foreach (var profile in LoadProfiles().Values)
+        {
+            if (localUserSids.Contains(profile.Sid)) continue;
+
+            var localPath = NormalizeProfilePath(profile.LocalPath);
+            if (string.IsNullOrEmpty(localPath)) continue;
+
+            var folderName = Path.GetFileName(localPath);
+            if (string.IsNullOrEmpty(folderName)) continue;
+
+            var folderExists = Directory.Exists(localPath);
+            string? reason = null;
+            if (!folderExists)
+                reason = "dangling ProfileList entry (profile folder missing)";
+            else if (!File.Exists(Path.Combine(localPath, "NTUSER.DAT")))
+                reason = "profile folder is missing NTUSER.DAT (partial delete)";
+
+            if (reason == null) continue;
+
+            // A gutted folder may still hold user files (Desktop, Documents) — for
+            // excluded accounts surface it instead of deleting. Dangling entries have
+            // no folder, so there is nothing to preserve even for exclusions.
+            if (folderExists && exclusions.Contains(folderName))
+            {
+                _log.Warning($"Corrupt profile state for excluded account {folderName}: {reason} — not remediating, manual review needed");
+                continue;
+            }
+
+            _log.Warning($"Corrupt profile state: {folderName} (SID: {profile.Sid}) — {reason}");
+
+            results.Add(new StaleProfileInfo
+            {
+                FolderName = folderName,
+                ProfilePath = localPath,
+                Sid = profile.Sid,
+                CreationDate = DateTime.Now,
+                LastUseTime = profile.LastUseTime,
+                HasRegistryEntry = true,
+                IsCorrupt = true,
+                CorruptReason = reason
+            });
+        }
+
+        return results;
+    }
+
     public List<string> FindOrphanedUsers(HashSet<string> exclusions)
     {
         var orphans = new List<string>();
