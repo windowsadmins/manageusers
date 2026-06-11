@@ -2,6 +2,7 @@ using ManageUsers.Models;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Security.Principal;
 using Microsoft.Win32;
 
 namespace ManageUsers.Services;
@@ -57,18 +58,20 @@ public sealed class UserDeletionService
         // Remove BitLocker protectors if applicable
         RemoveBitLockerProtectors(username);
 
-        // Resolve the profile SID before the account is gone — DeleteProfileW needs it
-        var profileSid = FindProfileSid(username);
+        // Resolve the profile entry before the account is gone — DeleteProfileW
+        // needs the SID, and the profile folder is not necessarily
+        // C:\Users\<username> (collision suffixes like username.MACHINE).
+        var (profileSid, profilePath) = FindProfile(username);
 
         // Delete the local user account
         if (!RemoveLocalUser(username))
             return false;
 
         // Delete user profile and home directory
-        RemoveUserProfile(username, profileSid);
+        RemoveUserProfile(username, profileSid, profilePath);
 
         // Verify deletion
-        if (!VerifyDeletion(username))
+        if (!VerifyDeletion(username, profilePath))
         {
             _log.Error($"Verification failed — user {username} may not be fully deleted");
             return false;
@@ -364,9 +367,9 @@ public sealed class UserDeletionService
         }
     }
 
-    private void RemoveUserProfile(string username, string? sid)
+    private void RemoveUserProfile(string username, string? sid, string? profilePath)
     {
-        var homePath = Path.Combine(@"C:\Users", username);
+        var homePath = profilePath ?? Path.Combine(@"C:\Users", username);
 
         // Preferred path: supported API removes folder + registry + per-SID state.
         if (sid != null && !IsHiveLoaded(sid) && TryDeleteProfileViaApi(sid, username))
@@ -394,19 +397,10 @@ public sealed class UserDeletionService
         {
             using var profileList = Registry.LocalMachine.OpenSubKey(
                 @"SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList", writable: true);
-            if (profileList != null)
+            if (profileList != null && sid != null)
             {
-                foreach (var sidStr in profileList.GetSubKeyNames())
-                {
-                    using var sidKey = profileList.OpenSubKey(sidStr);
-                    var path = sidKey?.GetValue("ProfileImagePath")?.ToString();
-                    if (path != null && path.EndsWith($"\\{username}", StringComparison.OrdinalIgnoreCase))
-                    {
-                        profileList.DeleteSubKeyTree(sidStr);
-                        _log.Info($"Profile registry entry deleted for {username}");
-                        break;
-                    }
-                }
+                profileList.DeleteSubKeyTree(sid, throwOnMissingSubKey: false);
+                _log.Info($"Profile registry entry deleted for {username}");
             }
         }
         catch (Exception ex)
@@ -416,30 +410,50 @@ public sealed class UserDeletionService
     }
 
     /// <summary>
-    /// Find the ProfileList SID whose ProfileImagePath ends with this username.
+    /// Resolve the account's SID and its ProfileList entry while the account still
+    /// exists. The SID is translated from the account name (never matched against
+    /// ProfileImagePath strings — collision-suffixed folders like "user.MACHINE" can
+    /// belong to a different account with the same name), and the profile path comes
+    /// from that SID's ProfileImagePath with environment variables expanded.
     /// </summary>
-    private string? FindProfileSid(string username)
+    private (string? Sid, string? ProfilePath) FindProfile(string username)
     {
+        string? sid = null;
         try
         {
-            using var profileList = Registry.LocalMachine.OpenSubKey(
-                @"SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList");
-            if (profileList == null) return null;
+            sid = ((SecurityIdentifier)new NTAccount(username)
+                .Translate(typeof(SecurityIdentifier))).Value;
+        }
+        catch (IdentityNotMappedException)
+        {
+            _log.Warning($"Could not map {username} to a SID");
+        }
+        catch (Exception ex)
+        {
+            _log.Warning($"Failed to resolve SID for {username}: {ex.Message}");
+        }
 
-            foreach (var sidStr in profileList.GetSubKeyNames())
+        if (sid == null)
+            return (null, null);
+
+        try
+        {
+            using var sidKey = Registry.LocalMachine.OpenSubKey(
+                $@"SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\{sid}");
+            var rawPath = sidKey?.GetValue("ProfileImagePath")?.ToString();
+            if (!string.IsNullOrWhiteSpace(rawPath))
             {
-                using var sidKey = profileList.OpenSubKey(sidStr);
-                var path = sidKey?.GetValue("ProfileImagePath")?.ToString();
-                if (path != null && path.EndsWith($"\\{username}", StringComparison.OrdinalIgnoreCase))
-                    return sidStr;
+                var expanded = Path.GetFullPath(Environment.ExpandEnvironmentVariables(rawPath))
+                    .TrimEnd('\\', '/');
+                return (sid, expanded);
             }
         }
         catch (Exception ex)
         {
-            _log.Warning($"Failed to resolve profile SID for {username}: {ex.Message}");
+            _log.Warning($"Failed to read profile path for {username} (SID: {sid}): {ex.Message}");
         }
 
-        return null;
+        return (sid, null);
     }
 
     #region Profile Deletion API (userenv P/Invoke)
@@ -568,7 +582,7 @@ public sealed class UserDeletionService
         dirInfo.Delete(recursive: false);
     }
 
-    private bool VerifyDeletion(string username)
+    private bool VerifyDeletion(string username, string? profilePath)
     {
         // Verify user no longer exists via net user exit code
         try
@@ -592,7 +606,7 @@ public sealed class UserDeletionService
         catch { }
 
         // Verify profile directory is gone
-        var homePath = Path.Combine(@"C:\Users", username);
+        var homePath = profilePath ?? Path.Combine(@"C:\Users", username);
         return !Directory.Exists(homePath);
     }
 
