@@ -65,6 +65,8 @@ public sealed class ManageUsersEngine
             _log.Info($"Deletion policy: {policy}");
             _log.Info($"End of term: {isEndOfTerm}");
 
+            _log.Audit("RUN_START", $"mode={(_simulate ? "simulate" : "live")} force={_force} usage={inventory.Usage} policy={policy} endOfTerm={isEndOfTerm}");
+
             // Main deletion loop
             var deletedCount = 0;
             var now = DateTime.Now;
@@ -122,6 +124,9 @@ public sealed class ManageUsersEngine
             // Update hidden users on login screen
             _repair.UpdateHiddenUsers(exclusions);
 
+            var removed = _delete.RemovedItems;
+            _log.Audit("RUN_SUMMARY", $"mode={(_simulate ? "simulate" : "live")} removed={removed.Count} items=[{string.Join(", ", removed)}]");
+
             _log.Info("========================================");
             _log.Info($"ManageUsers complete — {deletedCount} user(s) removed");
             _log.Info("========================================");
@@ -144,7 +149,7 @@ public sealed class ManageUsersEngine
         // Force term deletion — delete everything
         if (policy.ForceTermDeletion)
         {
-            _log.Info($"End-of-term force deletion: {user.Username}");
+            _log.Audit("DELETE_DECISION", $"user={user.Username} reason=end-of-term force deletion");
             return true;
         }
 
@@ -164,7 +169,7 @@ public sealed class ManageUsersEngine
                 var age = now - user.CreationDate;
                 if (age >= threshold)
                 {
-                    _log.Info($"CreationOnly: {user.Username} created {age.Days}d ago (threshold {policy.DurationDays}d) — DELETE");
+                    _log.Audit("DELETE_DECISION", $"user={user.Username} reason=created {age.Days}d ago (threshold {policy.DurationDays}d, CreationOnly)");
                     return true;
                 }
                 _log.Info($"CreationOnly: {user.Username} created {age.Days}d ago (threshold {policy.DurationDays}d) — keep");
@@ -178,7 +183,7 @@ public sealed class ManageUsersEngine
 
                 if (creationAge >= threshold && loginAge >= threshold)
                 {
-                    _log.Info($"LoginAndCreation: {user.Username} created {creationAge.Days}d ago, last login {(user.LastLogin.HasValue ? $"{loginAge.Days}d ago" : "never")} (threshold {policy.DurationDays}d) — DELETE");
+                    _log.Audit("DELETE_DECISION", $"user={user.Username} reason=created {creationAge.Days}d ago, last login {(user.LastLogin.HasValue ? $"{loginAge.Days}d ago" : "never")} (threshold {policy.DurationDays}d, LoginAndCreation)");
                     return true;
                 }
                 _log.Info($"LoginAndCreation: {user.Username} created {creationAge.Days}d ago, last login {(user.LastLogin.HasValue ? $"{loginAge.Days}d ago" : "never")} (threshold {policy.DurationDays}d) — keep");
@@ -194,7 +199,7 @@ public sealed class ManageUsersEngine
     {
         if (policy.ForceTermDeletion)
         {
-            _log.Info($"End-of-term force deletion: stale profile {profile.FolderName}");
+            _log.Audit("DELETE_DECISION", $"profile={profile.FolderName} reason=end-of-term force deletion (stale profile)");
             return true;
         }
 
@@ -213,7 +218,7 @@ public sealed class ManageUsersEngine
                 var age = now - profile.CreationDate;
                 if (age >= threshold)
                 {
-                    _log.Info($"CreationOnly: stale profile {profile.FolderName} created {age.Days}d ago (threshold {policy.DurationDays}d) — DELETE");
+                    _log.Audit("DELETE_DECISION", $"profile={profile.FolderName} reason=stale profile created {age.Days}d ago (threshold {policy.DurationDays}d, CreationOnly)");
                     return true;
                 }
                 _log.Info($"CreationOnly: stale profile {profile.FolderName} created {age.Days}d ago (threshold {policy.DurationDays}d) — keep");
@@ -227,7 +232,7 @@ public sealed class ManageUsersEngine
 
                 if (creationAge >= threshold && lastUseAge >= threshold)
                 {
-                    _log.Info($"LoginAndCreation: stale profile {profile.FolderName} created {creationAge.Days}d ago, last use {(profile.LastUseTime.HasValue ? $"{lastUseAge.Days}d ago" : "never")} (threshold {policy.DurationDays}d) — DELETE");
+                    _log.Audit("DELETE_DECISION", $"profile={profile.FolderName} reason=stale profile created {creationAge.Days}d ago, last use {(profile.LastUseTime.HasValue ? $"{lastUseAge.Days}d ago" : "never")} (threshold {policy.DurationDays}d, LoginAndCreation)");
                     return true;
                 }
                 _log.Info($"LoginAndCreation: stale profile {profile.FolderName} created {creationAge.Days}d ago, last use {(profile.LastUseTime.HasValue ? $"{lastUseAge.Days}d ago" : "never")} (threshold {policy.DurationDays}d) — keep");
