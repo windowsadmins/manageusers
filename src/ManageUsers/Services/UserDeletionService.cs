@@ -1,5 +1,7 @@
 using ManageUsers.Models;
+using System.ComponentModel;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using Microsoft.Win32;
 
 namespace ManageUsers.Services;
@@ -55,12 +57,15 @@ public sealed class UserDeletionService
         // Remove BitLocker protectors if applicable
         RemoveBitLockerProtectors(username);
 
+        // Resolve the profile SID before the account is gone — DeleteProfileW needs it
+        var profileSid = FindProfileSid(username);
+
         // Delete the local user account
         if (!RemoveLocalUser(username))
             return false;
 
         // Delete user profile and home directory
-        RemoveUserProfile(username);
+        RemoveUserProfile(username, profileSid);
 
         // Verify deletion
         if (!VerifyDeletion(username))
@@ -117,12 +122,49 @@ public sealed class UserDeletionService
             return true;
         }
 
+        // A loaded hive means the profile is in use (active or disconnected session) —
+        // deleting underneath it guts a live profile. Skip; the next run retries.
+        if (profile.Sid != null && IsHiveLoaded(profile.Sid))
+        {
+            _log.Warning($"Profile hive for {profile.FolderName} (SID: {profile.Sid}) is loaded — in use, skipping");
+            return false;
+        }
+
         _log.Info($"Removing stale profile: {profile.FolderName}");
 
         // Kill any lingering processes owned by this user
         KillUserProcesses(profile.FolderName);
 
-        // Remove ProfileList registry entry if present
+        // Preferred path: the supported profile-deletion API removes the folder,
+        // the ProfileList/ProfileGuid entries, and associated per-SID state together.
+        if (profile.Sid != null && profile.HasRegistryEntry
+            && TryDeleteProfileViaApi(profile.Sid, profile.FolderName))
+        {
+            RemoveResidualProfileFolder(profile.ProfilePath);
+            _log.Info($"Successfully removed stale profile: {profile.FolderName}");
+            return true;
+        }
+
+        // Fallback: manual cleanup. Folder first, registry second — and the registry
+        // entry is removed even if the folder delete is partial, because a ProfileList
+        // entry pointing at a gutted folder corrupts the next logon (temp profile,
+        // "Class not registered"), while an orphaned folder is harmless and is
+        // retried on the next run.
+        var folderRemoved = true;
+        if (Directory.Exists(profile.ProfilePath))
+        {
+            try
+            {
+                DeleteProfileDirectory(profile.ProfilePath);
+                _log.Info($"Profile directory removed: {profile.ProfilePath}");
+            }
+            catch (Exception ex)
+            {
+                _log.Warning($"Failed to remove profile directory {profile.ProfilePath}: {ex.Message}");
+                folderRemoved = false;
+            }
+        }
+
         if (profile.HasRegistryEntry && profile.Sid != null)
         {
             try
@@ -145,20 +187,8 @@ public sealed class UserDeletionService
             }
         }
 
-        // Delete profile folder
-        if (Directory.Exists(profile.ProfilePath))
-        {
-            try
-            {
-                DeleteProfileDirectory(profile.ProfilePath);
-                _log.Info($"Profile directory removed: {profile.ProfilePath}");
-            }
-            catch (Exception ex)
-            {
-                _log.Warning($"Failed to remove profile directory {profile.ProfilePath}: {ex.Message}");
-                return false;
-            }
-        }
+        if (!folderRemoved)
+            return false;
 
         _log.Info($"Successfully removed stale profile: {profile.FolderName}");
         return true;
@@ -334,9 +364,32 @@ public sealed class UserDeletionService
         }
     }
 
-    private void RemoveUserProfile(string username)
+    private void RemoveUserProfile(string username, string? sid)
     {
-        // Remove profile registry entry
+        var homePath = Path.Combine(@"C:\Users", username);
+
+        // Preferred path: supported API removes folder + registry + per-SID state.
+        if (sid != null && !IsHiveLoaded(sid) && TryDeleteProfileViaApi(sid, username))
+        {
+            RemoveResidualProfileFolder(homePath);
+            return;
+        }
+
+        // Fallback: manual cleanup, folder first so a ProfileList entry never
+        // outlives a gutted folder (that state corrupts the next logon).
+        if (Directory.Exists(homePath))
+        {
+            try
+            {
+                DeleteProfileDirectory(homePath);
+                _log.Info($"Profile directory removed: {homePath}");
+            }
+            catch (Exception ex)
+            {
+                _log.Warning($"Failed to remove profile directory {homePath}: {ex.Message}");
+            }
+        }
+
         try
         {
             using var profileList = Registry.LocalMachine.OpenSubKey(
@@ -360,22 +413,106 @@ public sealed class UserDeletionService
         {
             _log.Warning($"Failed to remove profile registry entry for {username}: {ex.Message}");
         }
+    }
 
-        // Remove profile directory
-        var homePath = Path.Combine(@"C:\Users", username);
-        if (Directory.Exists(homePath))
+    /// <summary>
+    /// Find the ProfileList SID whose ProfileImagePath ends with this username.
+    /// </summary>
+    private string? FindProfileSid(string username)
+    {
+        try
         {
-            try
+            using var profileList = Registry.LocalMachine.OpenSubKey(
+                @"SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList");
+            if (profileList == null) return null;
+
+            foreach (var sidStr in profileList.GetSubKeyNames())
             {
-                DeleteProfileDirectory(homePath);
-                _log.Info($"Profile directory removed: {homePath}");
-            }
-            catch (Exception ex)
-            {
-                _log.Warning($"Failed to remove profile directory {homePath}: {ex.Message}");
+                using var sidKey = profileList.OpenSubKey(sidStr);
+                var path = sidKey?.GetValue("ProfileImagePath")?.ToString();
+                if (path != null && path.EndsWith($"\\{username}", StringComparison.OrdinalIgnoreCase))
+                    return sidStr;
             }
         }
+        catch (Exception ex)
+        {
+            _log.Warning($"Failed to resolve profile SID for {username}: {ex.Message}");
+        }
+
+        return null;
     }
+
+    #region Profile Deletion API (userenv P/Invoke)
+
+    [DllImport("userenv.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool DeleteProfile(string lpSidString, string? lpProfilePath, string? lpComputerName);
+
+    /// <summary>
+    /// The user's registry hive being loaded under HKEY_USERS means the profile is
+    /// in use (active or disconnected session) and must not be deleted.
+    /// </summary>
+    private static bool IsHiveLoaded(string sid)
+    {
+        try
+        {
+            using var key = Registry.Users.OpenSubKey(sid);
+            return key != null;
+        }
+        catch
+        {
+            // If we can't tell, err on the side of "in use".
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Delete a profile via the supported DeleteProfileW API, which removes the
+    /// profile directory, the ProfileList/ProfileGuid registry entries, and
+    /// associated per-SID state consistently — unlike manual registry + folder
+    /// deletion, which can leave half-states that corrupt the next logon.
+    /// </summary>
+    private bool TryDeleteProfileViaApi(string sid, string displayName)
+    {
+        try
+        {
+            if (DeleteProfile(sid, null, null))
+            {
+                _log.Info($"Profile deleted via DeleteProfileW for {displayName} (SID: {sid})");
+                return true;
+            }
+
+            var error = Marshal.GetLastWin32Error();
+            _log.Warning($"DeleteProfileW failed for {displayName} (SID: {sid}): " +
+                $"{new Win32Exception(error).Message} (error {error}) — falling back to manual cleanup");
+        }
+        catch (Exception ex)
+        {
+            _log.Warning($"DeleteProfileW threw for {displayName} (SID: {sid}): {ex.Message} — falling back to manual cleanup");
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// DeleteProfileW can report success while leaving the folder behind if files
+    /// reappeared or were locked; sweep any residue so no orphan folder remains.
+    /// </summary>
+    private void RemoveResidualProfileFolder(string profilePath)
+    {
+        if (!Directory.Exists(profilePath)) return;
+
+        try
+        {
+            DeleteProfileDirectory(profilePath);
+            _log.Info($"Residual profile directory removed: {profilePath}");
+        }
+        catch (Exception ex)
+        {
+            _log.Warning($"Residual profile directory could not be fully removed ({profilePath}): {ex.Message}");
+        }
+    }
+
+    #endregion
 
     /// <summary>
     /// Recursively delete a user-profile directory. Built-in Directory.Delete(recursive)

@@ -104,6 +104,21 @@ public sealed class ManageUsersEngine
                 }
             }
 
+            // Remediate corrupt profile state left by partial deletions (dangling
+            // ProfileList entries, folders missing NTUSER.DAT). These break the next
+            // logon for that SID, so they bypass retention policy. Runs after the
+            // stale-profile pass so freshly removed profiles aren't re-evaluated.
+            var corruptProfiles = _enum.GetCorruptProfiles(exclusions);
+            if (corruptProfiles.Count > 0)
+            {
+                _log.Info($"Found {corruptProfiles.Count} corrupt profile(s) to remediate");
+                foreach (var profile in corruptProfiles)
+                {
+                    if (_delete.RemoveStaleProfile(profile))
+                        deletedCount++;
+                }
+            }
+
             // Update hidden users on login screen
             _repair.UpdateHiddenUsers(exclusions);
 

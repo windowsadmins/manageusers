@@ -12,4 +12,12 @@ public sealed record StaleProfileInfo
     public DateTime CreationDate { get; init; }
     public DateTime? LastUseTime { get; init; }
     public bool HasRegistryEntry { get; init; }
+
+    /// <summary>
+    /// Profile state is internally inconsistent (dangling ProfileList entry, or a
+    /// folder missing its NTUSER.DAT after a partial delete). Corrupt profiles break
+    /// the next logon, so they are remediated regardless of retention policy.
+    /// </summary>
+    public bool IsCorrupt { get; init; }
+    public string? CorruptReason { get; init; }
 }
