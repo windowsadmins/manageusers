@@ -17,6 +17,9 @@ public sealed class UserDeletionService
     private readonly ConfigService _config;
     private readonly bool _simulate;
 
+    /// <summary>Accounts and profiles actually removed this run, for the end-of-run audit summary.</summary>
+    public List<string> RemovedAccounts { get; } = new();
+
     public UserDeletionService(LogService log, ConfigService config, bool simulate)
     {
         _log = log;
@@ -32,14 +35,14 @@ public sealed class UserDeletionService
     {
         if (_simulate)
         {
-            _log.Info($"[SIMULATE] Would delete user: {username}");
+            _log.Audit("USER_DELETE_SIMULATED", $"user={username}");
             return true;
         }
 
         // Check if someone is logged in at the console — if so, defer
         if (IsUserAtConsole(username))
         {
-            _log.Warning($"User {username} is at the console — deferring deletion");
+            _log.Audit("USER_DELETE_DEFERRED", $"user={username} reason=console session active");
             DeferDelete(username, sessions);
             return true;
         }
@@ -65,7 +68,10 @@ public sealed class UserDeletionService
 
         // Delete the local user account
         if (!RemoveLocalUser(username))
+        {
+            _log.Audit("USER_DELETE_FAILED", $"user={username} reason=account removal failed");
             return false;
+        }
 
         // Delete user profile and home directory
         RemoveUserProfile(username, profileSid, profilePath);
@@ -74,13 +80,15 @@ public sealed class UserDeletionService
         if (!VerifyDeletion(username, profilePath))
         {
             _log.Error($"Verification failed — user {username} may not be fully deleted");
+            _log.Audit("USER_DELETE_FAILED", $"user={username} reason=verification failed, account or profile remnants remain");
             return false;
         }
 
         // Clear deferred entry if present
         ClearDeferred(username, sessions);
 
-        _log.Info($"Successfully deleted user: {username}");
+        _log.Audit("USER_DELETED", $"user={username} sid={profileSid ?? "unknown"} profile={profilePath ?? Path.Combine(@"C:\Users", username)}");
+        RemovedAccounts.Add(username);
         return true;
     }
 
@@ -109,7 +117,15 @@ public sealed class UserDeletionService
         foreach (var user in orphans)
         {
             _log.Info($"Removing orphaned user record: {user}");
-            RemoveLocalUser(user);
+            if (RemoveLocalUser(user))
+            {
+                _log.Audit("ORPHAN_USER_REMOVED", $"user={user} reason=local account had no profile");
+                RemovedAccounts.Add(user);
+            }
+            else
+            {
+                _log.Audit("ORPHAN_USER_REMOVE_FAILED", $"user={user}");
+            }
             ClearDeferred(user, sessions);
         }
     }
@@ -121,7 +137,7 @@ public sealed class UserDeletionService
     {
         if (_simulate)
         {
-            _log.Info($"[SIMULATE] Would remove stale profile: {profile.FolderName}");
+            _log.Audit("STALE_PROFILE_REMOVE_SIMULATED", $"profile={profile.FolderName} sid={profile.Sid ?? "none"} path={profile.ProfilePath}");
             return true;
         }
 
@@ -129,7 +145,7 @@ public sealed class UserDeletionService
         // deleting underneath it guts a live profile. Skip; the next run retries.
         if (profile.Sid != null && IsHiveLoaded(profile.Sid))
         {
-            _log.Warning($"Profile hive for {profile.FolderName} (SID: {profile.Sid}) is loaded — in use, skipping");
+            _log.Audit("STALE_PROFILE_SKIPPED", $"profile={profile.FolderName} sid={profile.Sid} reason=hive loaded, profile in use");
             return false;
         }
 
@@ -144,7 +160,8 @@ public sealed class UserDeletionService
             && TryDeleteProfileViaApi(profile.Sid, profile.FolderName))
         {
             RemoveResidualProfileFolder(profile.ProfilePath);
-            _log.Info($"Successfully removed stale profile: {profile.FolderName}");
+            _log.Audit("STALE_PROFILE_REMOVED", $"profile={profile.FolderName} sid={profile.Sid} path={profile.ProfilePath}");
+            RemovedAccounts.Add(profile.FolderName);
             return true;
         }
 
@@ -191,9 +208,13 @@ public sealed class UserDeletionService
         }
 
         if (!folderRemoved)
+        {
+            _log.Audit("STALE_PROFILE_REMOVE_FAILED", $"profile={profile.FolderName} sid={profile.Sid ?? "none"} path={profile.ProfilePath} reason=profile directory could not be fully removed");
             return false;
+        }
 
-        _log.Info($"Successfully removed stale profile: {profile.FolderName}");
+        _log.Audit("STALE_PROFILE_REMOVED", $"profile={profile.FolderName} sid={profile.Sid ?? "none"} path={profile.ProfilePath}");
+        RemovedAccounts.Add(profile.FolderName);
         return true;
     }
 

@@ -19,8 +19,10 @@ public static class AppConstants
     public static readonly string DefaultInventoryYamlPath = Path.Combine(ManagementRoot, "Inventory.yaml");
     public static readonly string LogDir = Path.Combine(ManagementRoot, "Logs");
     public static readonly string LogFile = Path.Combine(LogDir, "ManageUsers.log");
+    public static readonly string AuditLogFile = Path.Combine(LogDir, "ManageUsers.audit.log");
 
     public const long MaxLogSizeBytes = 10 * 1024 * 1024; // 10 MB
+    public const int MaxRotatedLogs = 5;
 
     /// <summary>
     /// Built-in Windows accounts that are never deleted.
