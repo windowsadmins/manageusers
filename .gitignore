@@ -92,3 +92,5 @@ $RECYCLE.BIN/
 # Project specific
 /release/
 /publish/
+
+.worktrees/
