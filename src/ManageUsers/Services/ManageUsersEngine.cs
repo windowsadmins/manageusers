@@ -124,8 +124,8 @@ public sealed class ManageUsersEngine
             // Update hidden users on login screen
             _repair.UpdateHiddenUsers(exclusions);
 
-            var removed = _delete.RemovedAccounts;
-            _log.Audit("RUN_SUMMARY", $"mode={(_simulate ? "simulate" : "live")} removed={removed.Count} accounts=[{string.Join(", ", removed)}]");
+            var removed = _delete.RemovedItems;
+            _log.Audit("RUN_SUMMARY", $"mode={(_simulate ? "simulate" : "live")} removed={removed.Count} items=[{string.Join(", ", removed)}]");
 
             _log.Info("========================================");
             _log.Info($"ManageUsers complete — {deletedCount} user(s) removed");

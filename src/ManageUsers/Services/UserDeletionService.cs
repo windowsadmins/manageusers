@@ -17,8 +17,8 @@ public sealed class UserDeletionService
     private readonly ConfigService _config;
     private readonly bool _simulate;
 
-    /// <summary>Accounts and profiles actually removed this run, for the end-of-run audit summary.</summary>
-    public List<string> RemovedAccounts { get; } = new();
+    /// <summary>Accounts and profile folders actually removed this run, for the end-of-run audit summary.</summary>
+    internal List<string> RemovedItems { get; } = new();
 
     public UserDeletionService(LogService log, ConfigService config, bool simulate)
     {
@@ -88,7 +88,7 @@ public sealed class UserDeletionService
         ClearDeferred(username, sessions);
 
         _log.Audit("USER_DELETED", $"user={username} sid={profileSid ?? "unknown"} profile={profilePath ?? Path.Combine(@"C:\Users", username)}");
-        RemovedAccounts.Add(username);
+        RemovedItems.Add(username);
         return true;
     }
 
@@ -120,7 +120,7 @@ public sealed class UserDeletionService
             if (RemoveLocalUser(user))
             {
                 _log.Audit("ORPHAN_USER_REMOVED", $"user={user} reason=local account had no profile");
-                RemovedAccounts.Add(user);
+                RemovedItems.Add(user);
             }
             else
             {
@@ -161,7 +161,7 @@ public sealed class UserDeletionService
         {
             RemoveResidualProfileFolder(profile.ProfilePath);
             _log.Audit("STALE_PROFILE_REMOVED", $"profile={profile.FolderName} sid={profile.Sid} path={profile.ProfilePath}");
-            RemovedAccounts.Add(profile.FolderName);
+            RemovedItems.Add(profile.FolderName);
             return true;
         }
 
@@ -214,7 +214,7 @@ public sealed class UserDeletionService
         }
 
         _log.Audit("STALE_PROFILE_REMOVED", $"profile={profile.FolderName} sid={profile.Sid ?? "none"} path={profile.ProfilePath}");
-        RemovedAccounts.Add(profile.FolderName);
+        RemovedItems.Add(profile.FolderName);
         return true;
     }
 

@@ -42,6 +42,9 @@ public sealed class LogService : IDisposable
         var timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
         var line = $"[{timestamp}] {action} | {detail}";
 
+        // Both writes happen under one lock acquisition (Monitor is reentrant for
+        // the nested Write) so audit entries can't reorder against the mirrored
+        // operational-log lines under concurrent logging.
         lock (_lock)
         {
             try
@@ -53,9 +56,9 @@ public sealed class LogService : IDisposable
                 // Audit write failure must not break the run; the operational
                 // log below still carries the entry.
             }
-        }
 
-        Write("AUDIT", $"{action} | {detail}");
+            Write("AUDIT", $"{action} | {detail}");
+        }
     }
 
     private void Write(string level, string message)
