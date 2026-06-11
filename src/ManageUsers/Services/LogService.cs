@@ -3,26 +3,63 @@ using ManageUsers.Models;
 namespace ManageUsers.Services;
 
 /// <summary>
-/// Handles log file writing, rotation, and console output.
+/// Handles log file writing, rotation, and console output. Operational messages go
+/// to ManageUsers.log; account-deletion decisions and outcomes additionally go to
+/// ManageUsers.audit.log, which is append-only — history is only discarded when the
+/// size-based retention cap pushes the oldest rotated generation out, never by age.
 /// </summary>
 public sealed class LogService : IDisposable
 {
     private readonly string _logFile;
+    private readonly string _auditFile;
     private StreamWriter? _writer;
+    private StreamWriter? _auditWriter;
     private readonly object _lock = new();
     private bool _disposed;
 
     public LogService()
     {
         _logFile = AppConstants.LogFile;
+        _auditFile = AppConstants.AuditLogFile;
         Directory.CreateDirectory(Path.GetDirectoryName(_logFile)!);
-        RotateIfNeeded();
+        RotateIfNeeded(_logFile);
+        RotateIfNeeded(_auditFile);
         _writer = new StreamWriter(_logFile, append: true) { AutoFlush = true };
+        _auditWriter = new StreamWriter(_auditFile, append: true) { AutoFlush = true };
     }
 
     public void Info(string message) => Write("INFO", message);
     public void Warning(string message) => Write("WARNING", message);
     public void Error(string message) => Write("ERROR", message);
+
+    /// <summary>
+    /// Record an account-deletion decision or outcome so "which accounts were
+    /// deleted, when, and why" stays answerable after the operational log rotates.
+    /// Entries land in both the audit log and the operational log.
+    /// </summary>
+    public void Audit(string action, string detail)
+    {
+        var timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+        var line = $"[{timestamp}] {action} | {detail}";
+
+        // Both writes happen under one lock acquisition (Monitor is reentrant for
+        // the nested Write) so audit entries can't reorder against the mirrored
+        // operational-log lines under concurrent logging.
+        lock (_lock)
+        {
+            try
+            {
+                _auditWriter?.WriteLine(line);
+            }
+            catch
+            {
+                // Audit write failure must not break the run; the operational
+                // log below still carries the entry.
+            }
+
+            Write("AUDIT", $"{action} | {detail}");
+        }
+    }
 
     private void Write(string level, string message)
     {
@@ -55,27 +92,35 @@ public sealed class LogService : IDisposable
         Console.ForegroundColor = prev;
     }
 
-    private void RotateIfNeeded()
+    private static void RotateIfNeeded(string file)
     {
-        if (!File.Exists(_logFile))
+        if (!File.Exists(file))
             return;
 
-        var fi = new FileInfo(_logFile);
+        if (new FileInfo(file).Length <= AppConstants.MaxLogSizeBytes)
+            return;
 
-        // Rotate if exceeds max size
-        if (fi.Length > AppConstants.MaxLogSizeBytes)
+        // Shift file.N → file.N+1 (dropping the oldest), then move the current
+        // file into the .1 slot.
+        try
         {
-            var rotated = _logFile + ".1";
-            if (File.Exists(rotated))
-                File.Delete(rotated);
-            File.Move(_logFile, rotated);
-            return;
+            var oldest = $"{file}.{AppConstants.MaxRotatedLogs}";
+            if (File.Exists(oldest))
+                File.Delete(oldest);
+
+            for (var i = AppConstants.MaxRotatedLogs - 1; i >= 1; i--)
+            {
+                var rotated = $"{file}.{i}";
+                if (File.Exists(rotated))
+                    File.Move(rotated, $"{file}.{i + 1}");
+            }
+
+            File.Move(file, $"{file}.1");
         }
-
-        // Truncate if older than 24 hours
-        if (fi.LastWriteTime < DateTime.Now.AddHours(-24))
+        catch
         {
-            File.WriteAllText(_logFile, "");
+            // Rotation failure must not prevent logging; keep appending to the
+            // oversized file rather than losing entries.
         }
     }
 
@@ -87,6 +132,8 @@ public sealed class LogService : IDisposable
         {
             _writer?.Dispose();
             _writer = null;
+            _auditWriter?.Dispose();
+            _auditWriter = null;
         }
     }
 }
