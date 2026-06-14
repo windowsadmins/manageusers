@@ -19,11 +19,13 @@ public sealed class UserEnumerationService
         _log = log;
     }
 
-    public List<UserSessionInfo> GetUserSessions(HashSet<string> exclusions)
+    public List<UserSessionInfo> GetUserSessions(HashSet<string> exclusions, bool protectAdmins, HashSet<string>? deletableAdmins = null)
     {
         var results = new List<UserSessionInfo>();
         var profiles = LoadProfiles();
         var localUsers = EnumerateLocalUsers();
+        var adminSids = protectAdmins ? GetAdministratorSids() : EmptySidSet;
+        deletableAdmins ??= EmptySidSet;
 
         foreach (var (name, disabled) in localUsers)
         {
@@ -43,6 +45,23 @@ public sealed class UserEnumerationService
             {
                 _log.Warning($"Could not resolve SID for {name} — skipping");
                 continue;
+            }
+
+            // Never delete local administrators unless explicitly opted in via
+            // delete_admins: true, or this specific account is named in
+            // deletable_admins. Protects service/SSH admin accounts that have no
+            // profile and never log in interactively (e.g. winadmins).
+            if (protectAdmins && adminSids.Contains(sid))
+            {
+                if (deletableAdmins.Contains(name))
+                {
+                    _log.Info($"Administrator {name} is listed in deletable_admins — eligible for deletion");
+                }
+                else
+                {
+                    _log.Info($"Skipping administrator account (protected; add to deletable_admins or set delete_admins: true to override): {name}");
+                    continue;
+                }
             }
 
             var creationDate = GetCreationDate(name, profile);
@@ -265,15 +284,30 @@ public sealed class UserEnumerationService
         return results;
     }
 
-    public List<string> FindOrphanedUsers(HashSet<string> exclusions)
+    public List<string> FindOrphanedUsers(HashSet<string> exclusions, bool protectAdmins, HashSet<string>? deletableAdmins = null)
     {
         var orphans = new List<string>();
         var profiles = LoadProfiles();
         var localUsers = EnumerateLocalUsers();
+        var adminSids = protectAdmins ? GetAdministratorSids() : EmptySidSet;
+        deletableAdmins ??= EmptySidSet;
 
         foreach (var (name, _) in localUsers)
         {
             if (exclusions.Contains(name)) continue;
+
+            // An admin account with no profile (service/SSH accounts like winadmins)
+            // would otherwise be deleted here every run with no age check. Protect it
+            // unless delete_admins: true or it's named in deletable_admins.
+            if (protectAdmins && !deletableAdmins.Contains(name))
+            {
+                var sid = ResolveSid(name);
+                if (!string.IsNullOrEmpty(sid) && adminSids.Contains(sid))
+                {
+                    _log.Info($"Skipping orphaned administrator account (protected; add to deletable_admins or set delete_admins: true to override): {name}");
+                    continue;
+                }
+            }
 
             var hasProfile = profiles.Values.Any(p =>
                 p.LocalPath.EndsWith($"\\{name}", StringComparison.OrdinalIgnoreCase));
@@ -287,6 +321,134 @@ public sealed class UserEnumerationService
 
         return orphans;
     }
+
+    #region Administrators Group Membership (netapi32 P/Invoke)
+
+    private static readonly HashSet<string> EmptySidSet = new(StringComparer.OrdinalIgnoreCase);
+    private HashSet<string>? _adminSidCache;
+
+    [DllImport("netapi32.dll", CharSet = CharSet.Unicode)]
+    private static extern int NetLocalGroupGetMembers(
+        string? serverName,
+        string localGroupName,
+        int level,
+        out IntPtr bufptr,
+        int prefmaxlen,
+        out int entriesRead,
+        out int totalEntries,
+        ref IntPtr resumeHandle);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LOCALGROUP_MEMBERS_INFO_0
+    {
+        public IntPtr lgrmi0_sid;
+    }
+
+    private const int NERR_Success = 0;
+    private const int ERROR_MORE_DATA = 234;
+
+    /// <summary>
+    /// Returns the SID strings of every member of the local Administrators group.
+    /// Resolved by the well-known BUILTIN\Administrators SID so it works regardless
+    /// of OS display language. Cached for the lifetime of this service instance.
+    /// On failure returns whatever was gathered (possibly empty) and logs a warning —
+    /// callers should treat an empty set as "could not determine admins".
+    /// </summary>
+    public HashSet<string> GetAdministratorSids()
+    {
+        if (_adminSidCache != null) return _adminSidCache;
+
+        var sids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var groupName = ResolveAdministratorsGroupName();
+        IntPtr resume = IntPtr.Zero;
+        var failed = false;
+
+        // Page through the membership. With MAX_PREFERRED_LENGTH the API usually
+        // returns everything in one call, but a large Administrators group can come
+        // back as ERROR_MORE_DATA with a partially-filled buffer plus a non-zero
+        // resume handle. Treat both NERR_Success and ERROR_MORE_DATA as "got a page,
+        // process it"; only other codes are real failures. Critically, a hard
+        // failure must NOT silently disable protection, so we log loudly.
+        try
+        {
+            int result;
+            do
+            {
+                IntPtr buffer = IntPtr.Zero;
+                result = NetLocalGroupGetMembers(null, groupName, 0,
+                    out buffer, MAX_PREFERRED_LENGTH, out int read, out _, ref resume);
+
+                if (result != NERR_Success && result != ERROR_MORE_DATA)
+                {
+                    failed = true;
+                    _log.Warning($"NetLocalGroupGetMembers('{groupName}') failed with code {result} — administrator protection may be incomplete");
+                    if (buffer != IntPtr.Zero) NetApiBufferFree(buffer);
+                    break;
+                }
+
+                try
+                {
+                    IntPtr current = buffer;
+                    for (int i = 0; i < read; i++)
+                    {
+                        var info = Marshal.PtrToStructure<LOCALGROUP_MEMBERS_INFO_0>(current);
+                        if (info.lgrmi0_sid != IntPtr.Zero)
+                        {
+                            try
+                            {
+                                var sid = new SecurityIdentifier(info.lgrmi0_sid);
+                                sids.Add(sid.Value);
+                            }
+                            catch (Exception ex)
+                            {
+                                _log.Warning($"Could not convert an Administrators member SID: {ex.Message}");
+                            }
+                        }
+                        current += Marshal.SizeOf<LOCALGROUP_MEMBERS_INFO_0>();
+                    }
+                }
+                finally
+                {
+                    if (buffer != IntPtr.Zero) NetApiBufferFree(buffer);
+                }
+            }
+            while (result == ERROR_MORE_DATA && resume != IntPtr.Zero);
+        }
+        catch (Exception ex)
+        {
+            failed = true;
+            _log.Warning($"Error enumerating Administrators group members: {ex.Message} — administrator protection may be incomplete");
+        }
+
+        if (failed && sids.Count == 0)
+            _log.Warning("Administrator enumeration returned no members — admin accounts may be left unprotected this run");
+        else
+            _log.Info($"Administrators group has {sids.Count} member SID(s)");
+
+        return _adminSidCache = sids;
+    }
+
+    /// <summary>
+    /// Resolve the localized name of the BUILTIN\Administrators group from its
+    /// well-known SID (S-1-5-32-544). Falls back to "Administrators" on failure.
+    /// </summary>
+    private static string ResolveAdministratorsGroupName()
+    {
+        try
+        {
+            var adminsSid = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
+            var account = (NTAccount)adminsSid.Translate(typeof(NTAccount));
+            var value = account.Value; // e.g. "BUILTIN\Administrators"
+            var slash = value.IndexOf('\\');
+            return slash >= 0 ? value[(slash + 1)..] : value;
+        }
+        catch
+        {
+            return "Administrators";
+        }
+    }
+
+    #endregion
 
     #region Local User Enumeration (netapi32 P/Invoke)
 
