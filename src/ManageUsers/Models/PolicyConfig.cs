@@ -10,6 +10,28 @@ public sealed class PolicyConfig
     [YamlMember(Alias = "exclusions")]
     public List<string> Exclusions { get; set; } = [];
 
+    /// <summary>
+    /// When false (the default), any local account that is a member of the local
+    /// Administrators group is never deleted — even if it has no profile, has never
+    /// logged in, or is past the age threshold. Set to true to opt in to deleting
+    /// admin accounts (the legacy behaviour). This is a safety net so service/SSH
+    /// admin accounts (e.g. winadmins) survive on devices that never received the
+    /// exclusions list.
+    /// </summary>
+    [YamlMember(Alias = "delete_admins")]
+    public bool DeleteAdmins { get; set; }
+
+    /// <summary>
+    /// Specific admin account names that ARE eligible for deletion even while the
+    /// global admin guard is on (delete_admins: false). Use this to reap a named
+    /// stale/rogue local admin without exposing every admin to deletion. Ignored
+    /// when delete_admins is true (everything is already deletable). An account in
+    /// the exclusions list always wins over this list (exclusion = never delete).
+    /// Matched case-insensitively by account name.
+    /// </summary>
+    [YamlMember(Alias = "deletable_admins")]
+    public List<string> DeletableAdmins { get; set; } = [];
+
     [YamlMember(Alias = "policies")]
     public List<PolicyRule> Policies { get; set; } = [];
 
