@@ -44,6 +44,8 @@ public sealed class ConfigService
                 _log.Warning("Config.yaml has no policies defined — using built-in defaults");
                 var defaults = GetDefaultPolicyConfig();
                 defaults.Exclusions = config?.Exclusions ?? [];
+                defaults.DeleteAdmins = config?.DeleteAdmins ?? false;
+                defaults.DeletableAdmins = config?.DeletableAdmins ?? [];
                 return defaults;
             }
             _log.Info($"Loaded {config.Policies.Count} policy rule(s) from Config.yaml");

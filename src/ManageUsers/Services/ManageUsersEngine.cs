@@ -45,15 +45,28 @@ public sealed class ManageUsersEngine
             var sessions = _config.LoadSessions();
             var inventory = _config.LoadInventory();
             var exclusions = _config.GetEffectiveExclusions(sessions, _policyConfig.Exclusions);
+            var protectAdmins = !_policyConfig.DeleteAdmins;
+
+            // Specific admin accounts an operator has opted in to deleting while the
+            // global admin guard is still on. Exclusions always win over this list.
+            var deletableAdmins = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var a in _policyConfig.DeletableAdmins ?? [])
+            {
+                if (!string.IsNullOrWhiteSpace(a) && !exclusions.Contains(a.Trim()))
+                    deletableAdmins.Add(a.Trim());
+            }
 
             _log.Info($"Exclusions loaded: {exclusions.Count} users");
+            _log.Info($"Administrator protection: {(protectAdmins ? "ENABLED — local admins are never deleted (delete_admins: false)" : "DISABLED — admins are eligible for deletion (delete_admins: true)")}");
+            if (protectAdmins && deletableAdmins.Count > 0)
+                _log.Info($"Admins explicitly opted in to deletion (deletable_admins): {string.Join(", ", deletableAdmins)}");
             _log.Info($"Inventory: area={inventory.Area}, location={inventory.Location}, usage={inventory.Usage}");
 
             // Process deferred deletions from previous runs
             _delete.ProcessDeferredDeletions(sessions);
 
             // Gather user session data
-            var users = _enum.GetUserSessions(exclusions);
+            var users = _enum.GetUserSessions(exclusions, protectAdmins, deletableAdmins);
             _log.Info($"Found {users.Count} non-excluded user(s) to evaluate");
 
             // Repair user states
@@ -83,7 +96,7 @@ public sealed class ManageUsersEngine
             }
 
             // Clean up orphaned users
-            var orphans = _enum.FindOrphanedUsers(exclusions);
+            var orphans = _enum.FindOrphanedUsers(exclusions, protectAdmins, deletableAdmins);
             if (orphans.Count > 0)
             {
                 _log.Info($"Found {orphans.Count} orphaned user(s)");
