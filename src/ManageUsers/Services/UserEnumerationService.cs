@@ -344,6 +344,9 @@ public sealed class UserEnumerationService
         public IntPtr lgrmi0_sid;
     }
 
+    private const int NERR_Success = 0;
+    private const int ERROR_MORE_DATA = 234;
+
     /// <summary>
     /// Returns the SID strings of every member of the local Administrators group.
     /// Resolved by the well-known BUILTIN\Administrators SID so it works regardless
@@ -357,50 +360,71 @@ public sealed class UserEnumerationService
 
         var sids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var groupName = ResolveAdministratorsGroupName();
-        IntPtr buffer = IntPtr.Zero;
         IntPtr resume = IntPtr.Zero;
+        var failed = false;
 
+        // Page through the membership. With MAX_PREFERRED_LENGTH the API usually
+        // returns everything in one call, but a large Administrators group can come
+        // back as ERROR_MORE_DATA with a partially-filled buffer plus a non-zero
+        // resume handle. Treat both NERR_Success and ERROR_MORE_DATA as "got a page,
+        // process it"; only other codes are real failures. Critically, a hard
+        // failure must NOT silently disable protection, so we log loudly.
         try
         {
-            int result = NetLocalGroupGetMembers(null, groupName, 0,
-                out buffer, MAX_PREFERRED_LENGTH, out int read, out _, ref resume);
-
-            if (result != 0)
+            int result;
+            do
             {
-                _log.Warning($"NetLocalGroupGetMembers('{groupName}') failed with code {result} — administrator protection may be incomplete");
-                return _adminSidCache = sids;
-            }
+                IntPtr buffer = IntPtr.Zero;
+                result = NetLocalGroupGetMembers(null, groupName, 0,
+                    out buffer, MAX_PREFERRED_LENGTH, out int read, out _, ref resume);
 
-            IntPtr current = buffer;
-            for (int i = 0; i < read; i++)
-            {
-                var info = Marshal.PtrToStructure<LOCALGROUP_MEMBERS_INFO_0>(current);
-                if (info.lgrmi0_sid != IntPtr.Zero)
+                if (result != NERR_Success && result != ERROR_MORE_DATA)
                 {
-                    try
+                    failed = true;
+                    _log.Warning($"NetLocalGroupGetMembers('{groupName}') failed with code {result} — administrator protection may be incomplete");
+                    if (buffer != IntPtr.Zero) NetApiBufferFree(buffer);
+                    break;
+                }
+
+                try
+                {
+                    IntPtr current = buffer;
+                    for (int i = 0; i < read; i++)
                     {
-                        var sid = new SecurityIdentifier(info.lgrmi0_sid);
-                        sids.Add(sid.Value);
-                    }
-                    catch (Exception ex)
-                    {
-                        _log.Warning($"Could not convert an Administrators member SID: {ex.Message}");
+                        var info = Marshal.PtrToStructure<LOCALGROUP_MEMBERS_INFO_0>(current);
+                        if (info.lgrmi0_sid != IntPtr.Zero)
+                        {
+                            try
+                            {
+                                var sid = new SecurityIdentifier(info.lgrmi0_sid);
+                                sids.Add(sid.Value);
+                            }
+                            catch (Exception ex)
+                            {
+                                _log.Warning($"Could not convert an Administrators member SID: {ex.Message}");
+                            }
+                        }
+                        current += Marshal.SizeOf<LOCALGROUP_MEMBERS_INFO_0>();
                     }
                 }
-                current += Marshal.SizeOf<LOCALGROUP_MEMBERS_INFO_0>();
+                finally
+                {
+                    if (buffer != IntPtr.Zero) NetApiBufferFree(buffer);
+                }
             }
+            while (result == ERROR_MORE_DATA && resume != IntPtr.Zero);
         }
         catch (Exception ex)
         {
+            failed = true;
             _log.Warning($"Error enumerating Administrators group members: {ex.Message} — administrator protection may be incomplete");
         }
-        finally
-        {
-            if (buffer != IntPtr.Zero)
-                NetApiBufferFree(buffer);
-        }
 
-        _log.Info($"Administrators group has {sids.Count} member SID(s)");
+        if (failed && sids.Count == 0)
+            _log.Warning("Administrator enumeration returned no members — admin accounts may be left unprotected this run");
+        else
+            _log.Info($"Administrators group has {sids.Count} member SID(s)");
+
         return _adminSidCache = sids;
     }
 

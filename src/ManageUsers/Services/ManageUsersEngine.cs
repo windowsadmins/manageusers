@@ -50,7 +50,7 @@ public sealed class ManageUsersEngine
             // Specific admin accounts an operator has opted in to deleting while the
             // global admin guard is still on. Exclusions always win over this list.
             var deletableAdmins = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var a in _policyConfig.DeletableAdmins)
+            foreach (var a in _policyConfig.DeletableAdmins ?? [])
             {
                 if (!string.IsNullOrWhiteSpace(a) && !exclusions.Contains(a.Trim()))
                     deletableAdmins.Add(a.Trim());
