@@ -34,6 +34,10 @@ public static class AppConstants
         "DefaultAccount",
         "Guest",
         "WDAGUtilityAccount",
-        "defaultuser0"
+        "defaultuser0",
+        // Management service account: must survive even when Config.yaml is
+        // missing/stale, delete_admins is misconfigured, or the account has
+        // been dropped from the Administrators group.
+        "winadmins"
     };
 }
