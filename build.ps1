@@ -80,8 +80,8 @@ function Show-CertificateList {
 function Get-BestCertificate {
     $certs = Find-CodeSigningCerts
 
-    # First priority: Enterprise certificate (EmilyCarrU Intune)
-    $enterpriseCert = $certs | Where-Object { $_.Subject -like '*EmilyCarrU Intune*' } |
+    # First priority: Enterprise certificate (configured via SIGNING_CERT_SUBJECT)
+    $enterpriseCert = $certs | Where-Object { $_.Subject -like "*$(if ($env:SIGNING_CERT_SUBJECT) { $env:SIGNING_CERT_SUBJECT } else { 'unset-signing-cert-subject' })*" } |
         Sort-Object NotAfter -Descending | Select-Object -First 1
     if ($enterpriseCert) { return $enterpriseCert }
 
