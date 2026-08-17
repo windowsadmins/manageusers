@@ -5,7 +5,7 @@ catalogs:
   - Development
 category: Management
 description: Manages local user accounts on shared Windows devices by removing inactive accounts based on area/room deletion policies, end-of-term forced deletion, and creation/login-based strategies.
-developer: ExampleOrgU
+developer: Windows Admins Open Source
 installcheck_script: |
   $ErrorActionPreference = 'SilentlyContinue'
   $binaryPath = 'C:\Program Files\sbin\manageusers.exe'
