@@ -1,8 +1,8 @@
 product:
   name: ManageUsers
   version: ${TIMESTAMP}
-  developer: EmilyCarrU
-  identifier: ca.emilycarru.winadmins.${ARCH}.ManageUsers
+  developer: ${PACKAGE_DEVELOPER}
+  identifier: ${PACKAGE_ID_PREFIX}.${ARCH}.ManageUsers
   description: Manages local user accounts on shared Windows devices by removing inactive accounts based on area/location deletion policies.
 signing_certificate: ${SIGNING_CERT_CN}
 postinstall_action: script

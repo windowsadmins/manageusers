@@ -11,7 +11,7 @@
     <LangVersion>preview</LangVersion>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <Description>Manages local user accounts on shared Windows devices by removing inactive accounts based on area/room deletion policies</Description>
-    <Authors>EmilyCarrU</Authors>
+    <Authors Condition="'$(Authors)' == ''">Windows Admins Open Source</Authors>
     <Product>ManageUsers</Product>
 
     <!-- Single-file publish settings -->
