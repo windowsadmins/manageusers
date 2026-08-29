@@ -16,6 +16,7 @@ public sealed class ManageUsersEngine
     private readonly UserEnumerationService _enum;
     private readonly UserDeletionService _delete;
     private readonly RepairService _repair;
+    private readonly RecycleBinService _recycleBin;
     private readonly bool _simulate;
     private readonly bool _force;
 
@@ -30,6 +31,7 @@ public sealed class ManageUsersEngine
         _enum = new UserEnumerationService(_log);
         _delete = new UserDeletionService(_log, _config, simulate);
         _repair = new RepairService(_log);
+        _recycleBin = new RecycleBinService(_log, simulate);
     }
 
     public int Run()
@@ -133,6 +135,13 @@ public sealed class ManageUsersEngine
                         deletedCount++;
                 }
             }
+
+            // Reclaim recycle bins whose SID no longer has a profile. Removing a
+            // profile did not used to remove its recycle bin, so every machine
+            // carries the deleted files of every user reaped before this shipped —
+            // unattributable once the profile and its ProfileList entry are gone.
+            // Runs last so bins emptied by this run's deletions are already handled.
+            _recycleBin.SweepOrphaned();
 
             // Update hidden users on login screen
             _repair.UpdateHiddenUsers(exclusions);

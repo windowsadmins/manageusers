@@ -15,6 +15,7 @@ public sealed class UserDeletionService
 {
     private readonly LogService _log;
     private readonly ConfigService _config;
+    private readonly RecycleBinService _recycleBin;
     private readonly bool _simulate;
 
     /// <summary>Accounts and profile folders actually removed this run, for the end-of-run audit summary.</summary>
@@ -25,6 +26,7 @@ public sealed class UserDeletionService
         _log = log;
         _config = config;
         _simulate = simulate;
+        _recycleBin = new RecycleBinService(log, simulate);
     }
 
     /// <summary>
@@ -153,6 +155,10 @@ public sealed class UserDeletionService
 
         // Kill any lingering processes owned by this user
         KillUserProcesses(profile.FolderName);
+
+        // The profile's recycle bin lives outside the profile directory and would
+        // otherwise survive this removal with nothing left to attribute it to.
+        _recycleBin.RemoveForSid(profile.Sid, profile.FolderName);
 
         // Preferred path: the supported profile-deletion API removes the folder,
         // the ProfileList/ProfileGuid entries, and associated per-SID state together.
@@ -390,6 +396,11 @@ public sealed class UserDeletionService
 
     private void RemoveUserProfile(string username, string? sid, string? profilePath)
     {
+        // Clear the recycle bin first, while the SID still resolves to a name for
+        // the audit log. Its contents are not under the profile directory, so
+        // removing the profile leaves them behind on every volume.
+        _recycleBin.RemoveForSid(sid, username);
+
         var homePath = profilePath ?? Path.Combine(@"C:\Users", username);
 
         // Preferred path: supported API removes folder + registry + per-SID state.

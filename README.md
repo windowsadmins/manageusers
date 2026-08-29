@@ -11,7 +11,8 @@ Designed for enterprise environments with 10,000+ devices managed by [Cimian](ht
 3. Enumerates local users, gathers creation dates and last login times
 4. Deletes users that exceed the inactivity threshold
 5. Cleans up orphaned accounts and profiles
-6. Runs as a signed SYSTEM scheduled task — no PowerShell, no script block logging noise
+6. Clears each removed profile's recycle bin, and sweeps recycle bins whose SID no longer has a profile
+7. Runs as a signed SYSTEM scheduled task — no PowerShell, no script block logging noise
 
 ## Policy Configuration
 
@@ -166,6 +167,7 @@ ManageUsers/
         ├── LogService.cs             # File + console logging with rotation
         ├── ManageUsersEngine.cs      # Main orchestrator
         ├── PolicyService.cs          # Config-driven policy evaluation
+        ├── RecycleBinService.cs      # Per-SID recycle bin removal + orphan sweep
         ├── RepairService.cs          # Orphan repair + hidden user registry
         ├── UserDeletionService.cs    # Core deletion + deferred processing
         └── UserEnumerationService.cs # Win32 user/profile enumeration
