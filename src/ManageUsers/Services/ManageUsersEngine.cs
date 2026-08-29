@@ -60,7 +60,7 @@ public sealed class ManageUsersEngine
             _log.Info($"Administrator protection: {(protectAdmins ? "ENABLED — local admins are never deleted (delete_admins: false)" : "DISABLED — admins are eligible for deletion (delete_admins: true)")}");
             if (protectAdmins && deletableAdmins.Count > 0)
                 _log.Info($"Admins explicitly opted in to deletion (deletable_admins): {string.Join(", ", deletableAdmins)}");
-            _log.Info($"Inventory: area={inventory.Area}, location={inventory.Location}, usage={inventory.Usage}");
+            _log.Info($"Inventory: area={inventory.Area}, location={inventory.Location}, usage={inventory.Usage}, catalog={inventory.Catalog}");
 
             // Process deferred deletions from previous runs
             _delete.ProcessDeferredDeletions(sessions);
