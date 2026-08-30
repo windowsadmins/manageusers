@@ -91,6 +91,8 @@ jobs:
             (Get-Content "build-info.yaml" -Raw) `
               -replace '\$\{TIMESTAMP\}', $version `
               -replace '\$\{ARCH\}', $arch `
+              -replace '\$\{PACKAGE_ID_PREFIX\}', 'com.github.windowsadmins' `
+              -replace '\$\{PACKAGE_DEVELOPER\}', 'Windows Admins Open Source' `
               -replace '(?m)^\s*signing_certificate:.*\r?\n?', '' |
               Set-Content "$stagingDir/build-info.yaml" -Encoding UTF8
 
