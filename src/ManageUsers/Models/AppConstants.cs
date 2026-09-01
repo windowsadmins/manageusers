@@ -17,9 +17,19 @@ public static class AppConstants
     public static readonly string ConfigYamlPath = Path.Combine(ManageUsersConfigDir, "Config.yaml");
     public static readonly string SessionsYamlPath = Path.Combine(ManageUsersConfigDir, "Sessions.yaml");
     public static readonly string DefaultInventoryYamlPath = Path.Combine(ManagementRoot, "Inventory.yaml");
-    public static readonly string LogDir = Path.Combine(ManagementRoot, "Logs");
-    public static readonly string LogFile = Path.Combine(LogDir, "ManageUsers.log");
-    public static readonly string AuditLogFile = Path.Combine(LogDir, "ManageUsers.audit.log");
+    public static readonly string LogDir = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+        "ManagedUsers", "logs");
+    public static readonly string LogFile = Path.Combine(LogDir, "manageusers.log");
+    public static readonly string AuditLogFile = Path.Combine(LogDir, "manageusers.audit.log");
+
+    /// <summary>
+    /// Log location used by earlier releases. Existing files are moved to
+    /// <see cref="LogDir"/> once on first run so history is kept.
+    /// </summary>
+    public static readonly string LegacyLogDir = Path.Combine(ManagementRoot, "Logs");
+    public static readonly string LegacyLogFile = Path.Combine(LegacyLogDir, "ManageUsers.log");
+    public static readonly string LegacyAuditLogFile = Path.Combine(LegacyLogDir, "ManageUsers.audit.log");
 
     public const long MaxLogSizeBytes = 10 * 1024 * 1024; // 10 MB
     public const int MaxRotatedLogs = 5;

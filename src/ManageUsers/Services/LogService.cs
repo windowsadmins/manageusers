@@ -4,9 +4,11 @@ namespace ManageUsers.Services;
 
 /// <summary>
 /// Handles log file writing, rotation, and console output. Operational messages go
-/// to ManageUsers.log; account-deletion decisions and outcomes additionally go to
-/// ManageUsers.audit.log, which is append-only — history is only discarded when the
+/// to manageusers.log; account-deletion decisions and outcomes additionally go to
+/// manageusers.audit.log, which is append-only — history is only discarded when the
 /// size-based retention cap pushes the oldest rotated generation out, never by age.
+/// Lines are written as <c>[yyyy-MM-dd HH:mm:ss] LEVEL message</c> in local time,
+/// with the level left-aligned to five characters (DEBUG, INFO, WARN, ERROR).
 /// </summary>
 public sealed class LogService : IDisposable
 {
@@ -22,6 +24,8 @@ public sealed class LogService : IDisposable
         _logFile = AppConstants.LogFile;
         _auditFile = AppConstants.AuditLogFile;
         Directory.CreateDirectory(Path.GetDirectoryName(_logFile)!);
+        MigrateLegacyLog(AppConstants.LegacyLogFile, _logFile);
+        MigrateLegacyLog(AppConstants.LegacyAuditLogFile, _auditFile);
         RotateIfNeeded(_logFile);
         RotateIfNeeded(_auditFile);
         _writer = new StreamWriter(_logFile, append: true) { AutoFlush = true };
@@ -29,7 +33,7 @@ public sealed class LogService : IDisposable
     }
 
     public void Info(string message) => Write("INFO", message);
-    public void Warning(string message) => Write("WARNING", message);
+    public void Warning(string message) => Write("WARN", message);
     public void Error(string message) => Write("ERROR", message);
 
     /// <summary>
@@ -39,8 +43,8 @@ public sealed class LogService : IDisposable
     /// </summary>
     public void Audit(string action, string detail)
     {
-        var timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
-        var line = $"[{timestamp}] {action} | {detail}";
+        var message = $"{action} | {detail}";
+        var line = FormatLine("INFO", message);
 
         // Both writes happen under one lock acquisition (Monitor is reentrant for
         // the nested Write) so audit entries can't reorder against the mirrored
@@ -57,14 +61,23 @@ public sealed class LogService : IDisposable
                 // log below still carries the entry.
             }
 
-            Write("AUDIT", $"{action} | {detail}");
+            Write("INFO", message);
         }
+    }
+
+    /// <summary>
+    /// Build one log line: <c>[yyyy-MM-dd HH:mm:ss] LEVEL message</c>, local time,
+    /// level padded to five characters so messages line up across levels.
+    /// </summary>
+    private static string FormatLine(string level, string message)
+    {
+        var timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+        return $"[{timestamp}] {level,-5} {message}";
     }
 
     private void Write(string level, string message)
     {
-        var timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
-        var line = $"[{timestamp}] [{level}] {message}";
+        var line = FormatLine(level, message);
 
         lock (_lock)
         {
@@ -82,7 +95,7 @@ public sealed class LogService : IDisposable
         var color = level switch
         {
             "ERROR" => ConsoleColor.Red,
-            "WARNING" => ConsoleColor.Yellow,
+            "WARN" => ConsoleColor.Yellow,
             _ => ConsoleColor.Gray
         };
 
@@ -90,6 +103,34 @@ public sealed class LogService : IDisposable
         Console.ForegroundColor = color;
         Console.WriteLine(line);
         Console.ForegroundColor = prev;
+    }
+
+    /// <summary>
+    /// One-time move of a log (and its rotated generations) from the location used
+    /// by earlier releases. Best effort: a failure leaves the old files in place and
+    /// logging starts fresh at the new path.
+    /// </summary>
+    private static void MigrateLegacyLog(string legacyFile, string newFile)
+    {
+        try
+        {
+            if (File.Exists(newFile) || !File.Exists(legacyFile))
+                return;
+
+            File.Move(legacyFile, newFile);
+
+            for (var i = 1; i <= AppConstants.MaxRotatedLogs; i++)
+            {
+                var rotated = $"{legacyFile}.{i}";
+                var target = $"{newFile}.{i}";
+                if (File.Exists(rotated) && !File.Exists(target))
+                    File.Move(rotated, target);
+            }
+        }
+        catch
+        {
+            // Keeping history is nice to have; never block logging on it.
+        }
     }
 
     private static void RotateIfNeeded(string file)
