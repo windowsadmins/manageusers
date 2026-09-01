@@ -8,7 +8,7 @@ if (-not $installLocation) { $installLocation = 'C:\Program Files\sbin' }
 
 $binaryPath = Join-Path $installLocation 'manageusers.exe'
 $configDir = 'C:\ProgramData\Management\ManageUsers'
-$logDir = 'C:\ProgramData\Management\ManageUsers\Logs'
+$logDir = 'C:\ProgramData\ManagedUsers\logs'
 
 Write-Host ''
 Write-Host '[ManageUsers] Installing ManageUsers package' -ForegroundColor Green
