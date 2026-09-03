@@ -20,7 +20,30 @@ public static class AppConstants
     public static readonly string LogDir = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
         "ManagedUsers", "logs");
-    public static readonly string LogFile = Path.Combine(LogDir, "manageusers.log");
+    /// <summary>
+    /// The operational log for a run starting at <paramref name="timestamp"/>. The day
+    /// directory is this tool's session: it is invoked far too often to justify one per
+    /// run, so a day's runs share a directory, with the structured event stream beside
+    /// them. This is the layout every managed tool shares.
+    /// </summary>
+    public static string LogFileFor(DateTime timestamp) =>
+        Path.Combine(LogDir, timestamp.ToString(DayFormat), "manageusers.log");
+
+    /// <summary>The structured event stream beside a day's operational log.</summary>
+    public static string EventsFileFor(DateTime timestamp) =>
+        Path.Combine(LogDir, timestamp.ToString(DayFormat), "events.jsonl");
+
+    public const string DayFormat = "yyyy-MM-dd";
+
+    /// <summary>Day directories older than this are removed when a run starts.</summary>
+    public const int LogRetentionDays = 30;
+
+    /// <summary>
+    /// The audit log stays at the root, outside the day directories and outside
+    /// retention: "which accounts were deleted, when, and why" must stay answerable
+    /// long after a day's operational log has aged out, so it is discarded only when
+    /// the size cap pushes the oldest rotated generation out.
+    /// </summary>
     public static readonly string AuditLogFile = Path.Combine(LogDir, "manageusers.audit.log");
 
     /// <summary>
