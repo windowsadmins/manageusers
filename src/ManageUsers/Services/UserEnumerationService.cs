@@ -27,7 +27,7 @@ public sealed class UserEnumerationService
         var adminSids = protectAdmins ? GetAdministratorSids() : EmptySidSet;
         deletableAdmins ??= EmptySidSet;
 
-        foreach (var (name, disabled) in localUsers)
+        foreach (var (name, disabled, _) in localUsers)
         {
             if (disabled) continue;
             if (exclusions.Contains(name))
@@ -103,7 +103,7 @@ public sealed class UserEnumerationService
         var localUsers = EnumerateLocalUsers();
         var localUserSids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var localUserNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var (name, _) in localUsers)
+        foreach (var (name, _, _) in localUsers)
         {
             localUserNames.Add(name);
             var sid = ResolveSid(name);
@@ -231,7 +231,7 @@ public sealed class UserEnumerationService
         var results = new List<StaleProfileInfo>();
 
         var localUserSids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var (name, _) in EnumerateLocalUsers())
+        foreach (var (name, _, _) in EnumerateLocalUsers())
         {
             var sid = ResolveSid(name);
             if (!string.IsNullOrEmpty(sid))
@@ -284,15 +284,31 @@ public sealed class UserEnumerationService
         return results;
     }
 
-    public List<string> FindOrphanedUsers(HashSet<string> exclusions, bool protectAdmins, HashSet<string>? deletableAdmins = null)
+    /// <summary>
+    /// Local accounts that have no profile directory. These are returned for the
+    /// caller to evaluate against the retention policy -- they are candidates, not
+    /// a delete list.
+    ///
+    /// This used to return bare names that the engine deleted unconditionally, with
+    /// no age check and without consulting the policy at all. A freshly created
+    /// shared-lab account has no profile until somebody logs in, so it was reaped on
+    /// the first nightly run -- on a device whose policy was duration_days: -1, two
+    /// lines after the retention pass had logged "never-delete policy -- keep" for
+    /// the same account. Returning UserSessionInfo lets the engine run these through
+    /// the same evaluator as every other account.
+    ///
+    /// CreationDate comes from the account's password age rather than a profile
+    /// directory that by definition does not exist. See GetAccountAgeFromPasswordAge.
+    /// </summary>
+    public List<UserSessionInfo> FindOrphanedUsers(HashSet<string> exclusions, bool protectAdmins, HashSet<string>? deletableAdmins = null)
     {
-        var orphans = new List<string>();
+        var orphans = new List<UserSessionInfo>();
         var profiles = LoadProfiles();
         var localUsers = EnumerateLocalUsers();
         var adminSids = protectAdmins ? GetAdministratorSids() : EmptySidSet;
         deletableAdmins ??= EmptySidSet;
 
-        foreach (var (name, _) in localUsers)
+        foreach (var (name, _, passwordAgeSeconds) in localUsers)
         {
             if (exclusions.Contains(name)) continue;
 
@@ -314,12 +330,62 @@ public sealed class UserEnumerationService
 
             if (!hasProfile)
             {
-                _log.Info($"Orphaned user (no profile): {name}");
-                orphans.Add(name);
+                var sid = ResolveSid(name);
+                if (string.IsNullOrEmpty(sid))
+                {
+                    _log.Warning($"Could not resolve SID for orphan candidate {name} -- skipping");
+                    continue;
+                }
+
+                var created = GetAccountAgeFromPasswordAge(name, passwordAgeSeconds);
+
+                _log.Info($"Orphan candidate (no profile): {name} | Account created: {created:yyyy-MM-dd}");
+                orphans.Add(new UserSessionInfo
+                {
+                    Username = name,
+                    Sid = sid,
+                    LastLogin = null,
+                    CreationDate = created,
+                    ProfilePath = null,
+                    HasProfile = false
+                });
             }
         }
 
         return orphans;
+    }
+
+    /// <summary>
+    /// Best-effort account creation time for an account with no profile directory.
+    ///
+    /// There is no local-account creation timestamp exposed by netapi32, and the
+    /// usual source -- the creation time of C:\Users\&lt;name&gt; -- is exactly what is
+    /// missing here. USER_INFO_1.usri1_password_age is the seconds elapsed since the
+    /// password was last set, which for an account whose password has never been
+    /// changed is the account's age. A password change resets it and makes the
+    /// account look younger; that errs toward keeping the account, and a password
+    /// change is itself recent administrative activity, so the direction is safe.
+    ///
+    /// Returns DateTime.Now (age zero, so never old enough to reap) when the value
+    /// is missing or nonsensical -- an unknown age must not read as "ancient".
+    /// </summary>
+    private DateTime GetAccountAgeFromPasswordAge(string username, int passwordAgeSeconds)
+    {
+        if (passwordAgeSeconds <= 0)
+        {
+            _log.Warning($"No usable password age for {username} -- treating the account as newly created");
+            return DateTime.Now;
+        }
+
+        try
+        {
+            return DateTime.Now - TimeSpan.FromSeconds(passwordAgeSeconds);
+        }
+        catch (Exception ex)
+        {
+            _log.Warning($"Could not derive an account age for {username} ({ex.Message}) -- treating it as newly created");
+            return DateTime.Now;
+        }
     }
 
     #region Administrators Group Membership (netapi32 P/Invoke)
@@ -483,9 +549,14 @@ public sealed class UserEnumerationService
     private const int FILTER_NORMAL_ACCOUNT = 0x0002;
     private const int MAX_PREFERRED_LENGTH = -1;
 
-    private List<(string Name, bool Disabled)> EnumerateLocalUsers()
+    /// <summary>
+    /// Enumerate local accounts. PasswordAgeSeconds is carried through because it is
+    /// the only account-age signal available for an account that has no profile
+    /// directory to read a creation time from.
+    /// </summary>
+    private List<(string Name, bool Disabled, int PasswordAgeSeconds)> EnumerateLocalUsers()
     {
-        var users = new List<(string, bool)>();
+        var users = new List<(string, bool, int)>();
         IntPtr buffer = IntPtr.Zero;
         IntPtr resume = IntPtr.Zero;
 
@@ -507,7 +578,7 @@ public sealed class UserEnumerationService
                 if (info.usri1_name != null)
                 {
                     bool disabled = (info.usri1_flags & UF_ACCOUNTDISABLE) != 0;
-                    users.Add((info.usri1_name, disabled));
+                    users.Add((info.usri1_name, disabled, info.usri1_password_age));
                 }
                 current += Marshal.SizeOf<USER_INFO_1>();
             }

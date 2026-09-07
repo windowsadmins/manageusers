@@ -97,13 +97,33 @@ public sealed class ManageUsersEngine
                 }
             }
 
-            // Clean up orphaned users
-            var orphans = _enum.FindOrphanedUsers(exclusions, protectAdmins, deletableAdmins);
-            if (orphans.Count > 0)
+            // Clean up orphaned users -- local accounts with no profile directory.
+            //
+            // These go through EvaluateUser like every other account. They used to be
+            // deleted here unconditionally, which meant a device set to duration_days:
+            // -1 still lost accounts, and a shared-lab account created that afternoon
+            // was reaped at 03:00 before anyone could log in and give it a profile.
+            var orphanCandidates = _enum.FindOrphanedUsers(exclusions, protectAdmins, deletableAdmins);
+            if (orphanCandidates.Count > 0)
             {
-                _log.Info($"Found {orphans.Count} orphaned user(s)");
-                _delete.RemoveOrphanedUsers(orphans, sessions);
-                deletedCount += orphans.Count;
+                _log.Info($"Found {orphanCandidates.Count} orphan candidate(s) with no profile");
+
+                var orphans = new List<string>();
+                foreach (var candidate in orphanCandidates)
+                {
+                    if (EvaluateUser(candidate, policy, now))
+                        orphans.Add(candidate.Username);
+                }
+
+                if (orphans.Count > 0)
+                {
+                    _delete.RemoveOrphanedUsers(orphans, sessions);
+                    deletedCount += orphans.Count;
+                }
+                else
+                {
+                    _log.Info("No orphan candidate is past the retention policy -- keeping all");
+                }
             }
 
             // Clean up stale Entra/cached profiles (no local account)
