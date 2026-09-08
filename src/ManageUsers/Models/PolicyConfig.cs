@@ -76,6 +76,16 @@ public sealed class MatchCriteria
 
     [YamlMember(Alias = "usage")]
     public string? Usage { get; set; }
+
+    /// <summary>
+    /// Matches the inventory catalog. Useful where a single usage value covers
+    /// fleets that want different retention - shared teaching machines that should
+    /// reap stale accounts, versus shared appliances and staff machines that should
+    /// never delete anything - and where area alone cannot separate them because the
+    /// same area name appears under more than one catalog.
+    /// </summary>
+    [YamlMember(Alias = "catalog")]
+    public string? Catalog { get; set; }
 }
 
 /// <summary>
