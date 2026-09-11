@@ -64,10 +64,31 @@ public sealed class PolicyRule
 }
 
 /// <summary>
-/// Regex patterns to match against inventory fields (area, room, usage).
+/// Regex patterns to match against inventory fields (catalog, area, room, usage).
 /// </summary>
 public sealed class MatchCriteria
 {
+    /// <summary>
+    /// The device's catalog, e.g. Curriculum, Kiosk, Staff.
+    /// </summary>
+    /// <remarks>
+    /// This is what separates a teaching lab from every other shared device, and it
+    /// was the missing half of the fleet policy. Config.yaml has keyed rules on
+    /// `catalog:` since it was written, but the deserializer ignores unknown keys,
+    /// so both Shared rules collapsed to their `usage: ^Shared$` test alone. First
+    /// match wins and "Shared devices that never reap" is listed first, so every
+    /// teaching lab took the never-reap branch and none of them have ever reaped.
+    ///
+    /// That collapse was deliberate and safe -- an out-of-date client stops deleting
+    /// rather than deletes the wrong thing -- but it was meant to be temporary. The
+    /// cost of it running for months: on a Digital Fabrication workstation, 288 user
+    /// profiles accumulated, each leaving a pair of per-user OneDrive scheduled
+    /// tasks behind. At 806 tasks the Task Scheduler wedged, which stopped the
+    /// machine installing anything and blocked it from rebooting.
+    /// </remarks>
+    [YamlMember(Alias = "catalog")]
+    public string? Catalog { get; set; }
+
     [YamlMember(Alias = "area")]
     public string? Area { get; set; }
 
