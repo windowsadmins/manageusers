@@ -34,6 +34,7 @@ public sealed class PolicyService
             };
         }
 
+        var catalog = inventory.Catalog.Trim();
         var area = inventory.Area.Trim();
         var room = inventory.Location.Trim();
         var usage = inventory.Usage.Trim();
@@ -41,7 +42,7 @@ public sealed class PolicyService
         // Evaluate rules in order — first match wins
         foreach (var rule in _config.Policies)
         {
-            if (Matches(rule.Match, area, room, usage))
+            if (Matches(rule.Match, catalog, area, room, usage))
             {
                 if (isEndOfTerm && rule.ForceAtEndOfTerm)
                 {
@@ -66,7 +67,7 @@ public sealed class PolicyService
 
         // No rule matched — use default
         var def = _config.DefaultPolicy;
-        _log.Info($"No rule matched area='{area}'/room='{room}'/usage='{usage}' → default policy: {def.DurationDays} days, {def.Strategy}");
+        _log.Info($"No rule matched catalog='{catalog}'/area='{area}'/room='{room}'/usage='{usage}' → default policy: {def.DurationDays} days, {def.Strategy}");
         return new DeletionPolicy
         {
             DurationDays = def.DurationDays,
@@ -75,8 +76,10 @@ public sealed class PolicyService
         };
     }
 
-    private static bool Matches(MatchCriteria match, string area, string room, string usage)
+    private static bool Matches(MatchCriteria match, string catalog, string area, string room, string usage)
     {
+        bool catalogMatch = string.IsNullOrWhiteSpace(match.Catalog)
+            || Regex.IsMatch(catalog, match.Catalog, RegexOptions.IgnoreCase);
         bool areaMatch = string.IsNullOrWhiteSpace(match.Area)
             || Regex.IsMatch(area, match.Area, RegexOptions.IgnoreCase);
         bool roomMatch = string.IsNullOrWhiteSpace(match.Room)
@@ -86,6 +89,7 @@ public sealed class PolicyService
 
         // Collect only the criteria that are actually specified
         var specified = new List<bool>();
+        if (!string.IsNullOrWhiteSpace(match.Catalog)) specified.Add(catalogMatch);
         if (!string.IsNullOrWhiteSpace(match.Area)) specified.Add(areaMatch);
         if (!string.IsNullOrWhiteSpace(match.Room)) specified.Add(roomMatch);
         if (!string.IsNullOrWhiteSpace(match.Usage)) specified.Add(usageMatch);
