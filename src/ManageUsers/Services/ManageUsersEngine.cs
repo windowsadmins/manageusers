@@ -17,6 +17,7 @@ public sealed class ManageUsersEngine
     private readonly UserDeletionService _delete;
     private readonly RepairService _repair;
     private readonly RecycleBinService _recycleBin;
+    private readonly PerUserTaskService _perUserTasks;
     private readonly bool _simulate;
     private readonly bool _force;
 
@@ -32,6 +33,7 @@ public sealed class ManageUsersEngine
         _delete = new UserDeletionService(_log, _config, simulate);
         _repair = new RepairService(_log);
         _recycleBin = new RecycleBinService(_log, simulate);
+        _perUserTasks = new PerUserTaskService(_log, simulate);
     }
 
     public int Run()
@@ -162,6 +164,10 @@ public sealed class ManageUsersEngine
             // unattributable once the profile and its ProfileList entry are gone.
             // Runs last so bins emptied by this run's deletions are already handled.
             _recycleBin.SweepOrphaned();
+
+            // Same leftover class, different store: tasks a deleted profile left behind.
+            // These are what wedge the Task Scheduler once enough of them pile up.
+            _perUserTasks.SweepOrphaned();
 
             // Update hidden users on login screen
             _repair.UpdateHiddenUsers(exclusions);
