@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Security.Principal;
 using Microsoft.Win32;
 
@@ -25,10 +24,14 @@ public sealed class PerUserTaskService
 {
     private const string TaskFolder = @"C:\Windows\System32\Tasks";
 
-    // Bounded on purpose. This is cleaning up after a scheduler that wedges, so it
-    // must never become another unbounded call into one — that is the bug it exists
-    // to prevent, and it has already been paid for once here.
-    private static readonly TimeSpan DeleteTimeout = TimeSpan.FromSeconds(30);
+    private const string TaskCache =
+        @"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Schedule\TaskCache";
+
+    // Where a task GUID is filed alongside TaskCache\Tasks. A task appears in
+    // exactly one of these, decided by its trigger, and which one is not derivable
+    // from the task — so removal tries each.
+    private static readonly string[] ScheduleBuckets =
+        { "Plain", "Logon", "Boot", "Maintenance", "Critical" };
 
     private readonly LogService _log;
     private readonly bool _simulate;
@@ -105,8 +108,8 @@ public sealed class PerUserTaskService
     /// Read from the task XML on disk rather than through the scheduler API. The
     /// API is exactly what stops answering on an affected machine, so enumerating
     /// through it would fail precisely where this is most needed. The files are
-    /// authoritative for what exists; deletion still goes through schtasks so the
-    /// registry side stays consistent.
+    /// authoritative for what exists, and deletion removes the same two things the
+    /// scheduler itself stores: the XML file and its TaskCache registry entries.
     ///
     /// Only the root folder is considered. Per-user tasks are registered there, and
     /// the subfolders under \Microsoft\ belong to Windows.
@@ -167,6 +170,30 @@ public sealed class PerUserTaskService
         return remainder.All(c => char.IsDigit(c) || c == '-') ? sid : null;
     }
 
+    /// <summary>
+    /// Remove one task by deleting what the scheduler itself stores for it.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately does NOT shell out to schtasks.exe, and that is the whole point
+    /// of this method.
+    ///
+    /// schtasks is a client of the Task Scheduler service over RPC, and that service
+    /// is what degrades on an affected machine. Deleting several hundred tasks meant
+    /// several hundred RPC round trips into a service already struggling, so the
+    /// cleanup became the largest single cause of the condition it exists to prevent:
+    /// a machine mid-sweep stops answering, the sweep stalls, and a clean shutdown is
+    /// then impossible because a wedged scheduler blocks it. Measured on a workstation
+    /// carrying 439 of these tasks.
+    ///
+    /// A task is two things on disk: the XML file under System32\Tasks, and a set of
+    /// TaskCache registry entries keyed by a GUID. Removing both reaches the same end
+    /// state schtasks would, without waking the service once.
+    ///
+    /// The running service keeps its own in-memory view, so a deleted task can linger
+    /// there until the service restarts. That is cosmetic: it is gone from the store,
+    /// it does not come back across a reboot, and it no longer counts toward the file
+    /// count that drives the degradation.
+    /// </remarks>
     private bool Delete(string taskName, string owner, string sid, bool orphaned)
     {
         var label = orphaned ? "orphaned " : "";
@@ -179,39 +206,23 @@ public sealed class PerUserTaskService
 
         try
         {
-            var psi = new ProcessStartInfo
-            {
-                FileName = "schtasks.exe",
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                CreateNoWindow = true
-            };
-            psi.ArgumentList.Add("/Delete");
-            psi.ArgumentList.Add("/TN");
-            psi.ArgumentList.Add(taskName);
-            psi.ArgumentList.Add("/F");
+            var id = ReadTaskId(taskName);
 
-            using var proc = Process.Start(psi);
-            if (proc == null)
+            if (id != null)
             {
-                _log.Warning($"Could not start schtasks to delete '{taskName}'");
-                return false;
+                Registry.LocalMachine.DeleteSubKeyTree($@"{TaskCache}\Tasks\{id}", throwOnMissingSubKey: false);
+
+                foreach (var bucket in ScheduleBuckets)
+                    Registry.LocalMachine.DeleteSubKeyTree($@"{TaskCache}\{bucket}\{id}", throwOnMissingSubKey: false);
             }
 
-            if (!proc.WaitForExit((int)DeleteTimeout.TotalMilliseconds))
-            {
-                // The scheduler is already wedged. Stop rather than join the queue.
-                try { proc.Kill(entireProcessTree: true); } catch { }
-                _log.Warning($"Task Scheduler did not answer within {DeleteTimeout.TotalSeconds:N0}s deleting '{taskName}'; leaving it for the next run");
-                return false;
-            }
+            Registry.LocalMachine.DeleteSubKeyTree($@"{TaskCache}\Tree\{taskName}", throwOnMissingSubKey: false);
 
-            if (proc.ExitCode != 0)
-            {
-                _log.Warning($"schtasks exited {proc.ExitCode} deleting '{taskName}'");
-                return false;
-            }
+            // Last, so a failure above leaves the task still discoverable by the next
+            // run rather than leaving registry state pointing at a file that is gone.
+            var path = Path.Combine(TaskFolder, taskName);
+            if (File.Exists(path))
+                File.Delete(path);
 
             _log.Info($"Deleted {label}scheduled task '{taskName}' ({owner})");
             _log.Audit("TASK_DELETE", $"task={taskName} sid={sid} orphaned={orphaned}");
@@ -221,6 +232,28 @@ public sealed class PerUserTaskService
         {
             _log.Warning($"Failed to delete scheduled task '{taskName}': {ex.Message}");
             return false;
+        }
+    }
+
+    /// <summary>
+    /// The GUID the scheduler files a task under, or null when there is no Tree entry.
+    /// </summary>
+    /// <remarks>
+    /// A missing Tree entry is not an error: it means the task is already half gone,
+    /// which is one of the states this sweep exists to tidy. The file is still removed.
+    /// </remarks>
+    private string? ReadTaskId(string taskName)
+    {
+        try
+        {
+            using var key = Registry.LocalMachine.OpenSubKey($@"{TaskCache}\Tree\{taskName}");
+            var id = key?.GetValue("Id") as string;
+            return string.IsNullOrWhiteSpace(id) ? null : id;
+        }
+        catch (Exception ex)
+        {
+            _log.Warning($"Could not read the TaskCache entry for '{taskName}': {ex.Message}");
+            return null;
         }
     }
 
