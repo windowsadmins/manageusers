@@ -75,6 +75,17 @@ public sealed class PerUserTaskService
     /// <returns>Number of orphaned tasks removed.</returns>
     public int SweepOrphaned()
     {
+        if (!_simulate && !CanWriteTaskCache())
+        {
+            // One line instead of several hundred. Without these rights the sweep
+            // cannot remove anything, and the previous behaviour was to carry on
+            // and delete the XML files regardless.
+            _log.Warning(
+                "TaskCache is not writable by this process; skipping the scheduled task sweep. " +
+                "It requires SYSTEM — an elevated administrator is refused.");
+            return 0;
+        }
+
         var known = LoadProfileListSids();
         if (known.Count == 0)
         {
@@ -100,8 +111,90 @@ public sealed class PerUserTaskService
                 removed++;
         }
 
+        removed += SweepStrandedCacheEntries();
+
         if (removed > 0)
             _log.Info($"Removed {removed} orphaned per-user scheduled task(s)");
+
+        return removed;
+    }
+
+    /// <summary>
+    /// Remove TaskCache entries whose task file no longer exists.
+    /// </summary>
+    /// <remarks>
+    /// Repairs damage this cleanup used to cause itself. When the registry delete
+    /// failed silently and the XML file was removed anyway, the task ended up
+    /// registered but with nothing on disk — invisible to a sweep that enumerates
+    /// files, and still counted by the scheduler. Nothing would ever have reclaimed
+    /// those, so the sweep has to come at them from the registry side as well.
+    ///
+    /// Every entry records the task's path under the task folder, and a path naming
+    /// a file that is not there is by definition not a live task. Windows' own tasks
+    /// all have their files, so this does not reach them.
+    /// </remarks>
+    private int SweepStrandedCacheEntries()
+    {
+        var removed = 0;
+
+        string[] ids;
+        try
+        {
+            using var tasks = Registry.LocalMachine.OpenSubKey($@"{TaskCache}\Tasks");
+            if (tasks == null)
+                return 0;
+
+            ids = tasks.GetSubKeyNames();
+        }
+        catch (Exception ex)
+        {
+            _log.Warning($"Could not enumerate TaskCache: {ex.Message}");
+            return 0;
+        }
+
+        foreach (var id in ids)
+        {
+            string? relative;
+            try
+            {
+                using var entry = Registry.LocalMachine.OpenSubKey($@"{TaskCache}\Tasks\{id}");
+                relative = entry?.GetValue("Path") as string;
+            }
+            catch
+            {
+                continue;
+            }
+
+            // No Path is not evidence of anything; leave it alone.
+            if (string.IsNullOrWhiteSpace(relative))
+                continue;
+
+            var file = Path.Combine(TaskFolder, relative.TrimStart('\\'));
+            if (File.Exists(file))
+                continue;
+
+            if (_simulate)
+            {
+                _log.Info($"SIMULATE: would remove stranded TaskCache entry for '{relative}'");
+                removed++;
+                continue;
+            }
+
+            if (!DeleteKey($@"{TaskCache}\Tasks\{id}"))
+            {
+                _log.Warning($"Stranded TaskCache entry for '{relative}' could not be removed");
+                continue;
+            }
+
+            foreach (var bucket in ScheduleBuckets)
+                DeleteKey($@"{TaskCache}\{bucket}\{id}");
+
+            DeleteKey($@"{TaskCache}\Tree{relative}");
+
+            _log.Info($"Removed stranded TaskCache entry for '{relative}'");
+            _log.Audit("TASK_CACHE_STRAND_REMOVE", $"path={relative} id={id}");
+            removed++;
+        }
 
         return removed;
     }
@@ -212,9 +305,10 @@ public sealed class PerUserTaskService
     /// state schtasks would, without waking the service once.
     ///
     /// The running service keeps its own in-memory view, so a deleted task can linger
-    /// there until the service restarts. That is cosmetic: it is gone from the store,
-    /// it does not come back across a reboot, and it no longer counts toward the file
-    /// count that drives the degradation.
+    /// there until the service restarts, and a machine already degraded stays degraded
+    /// until then. It does not need a reboot: Schedule runs alone in its own svchost
+    /// and reports CanStop, so restarting the service is enough to pick up the
+    /// shrunken store.
     /// </remarks>
     private bool Delete(string taskName, string owner, string sid, bool orphaned)
     {
@@ -232,13 +326,18 @@ public sealed class PerUserTaskService
 
             if (id != null)
             {
-                Registry.LocalMachine.DeleteSubKeyTree($@"{TaskCache}\Tasks\{id}", throwOnMissingSubKey: false);
+                if (!DeleteKey($@"{TaskCache}\Tasks\{id}"))
+                    return FailedRegistryDelete(taskName, $@"Tasks\{id}");
 
                 foreach (var bucket in ScheduleBuckets)
-                    Registry.LocalMachine.DeleteSubKeyTree($@"{TaskCache}\{bucket}\{id}", throwOnMissingSubKey: false);
+                {
+                    if (!DeleteKey($@"{TaskCache}\{bucket}\{id}"))
+                        return FailedRegistryDelete(taskName, $@"{bucket}\{id}");
+                }
             }
 
-            Registry.LocalMachine.DeleteSubKeyTree($@"{TaskCache}\Tree\{taskName}", throwOnMissingSubKey: false);
+            if (!DeleteKey($@"{TaskCache}\Tree\{taskName}"))
+                return FailedRegistryDelete(taskName, $@"Tree\{taskName}");
 
             // Last, so a failure above leaves the task still discoverable by the next
             // run rather than leaving registry state pointing at a file that is gone.
@@ -253,6 +352,71 @@ public sealed class PerUserTaskService
         catch (Exception ex)
         {
             _log.Warning($"Failed to delete scheduled task '{taskName}': {ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Delete a registry key and confirm it is actually gone.
+    /// </summary>
+    /// <remarks>
+    /// The confirmation is the entire point. <c>DeleteSubKeyTree</c> called with
+    /// <c>throwOnMissingSubKey: false</c> — which is what this code wants, because a
+    /// half-removed task legitimately has keys missing — cannot distinguish "not
+    /// there" from "not allowed to open it", and returns quietly for both. Under an
+    /// elevated administrator, which is not enough for TaskCache, every one of these
+    /// calls returns success and deletes nothing.
+    ///
+    /// That combination produced the worst possible outcome on two workstations: the
+    /// registry delete silently did nothing, the XML file below it was removed
+    /// anyway, and the task became invisible to this sweep while still counting
+    /// toward the store the scheduler enumerates. 134 and 146 tasks each, gone from
+    /// disk and permanently registered. Verifying here is what keeps the file
+    /// deletion honest.
+    /// </remarks>
+    private static bool DeleteKey(string path)
+    {
+        try
+        {
+            Registry.LocalMachine.DeleteSubKeyTree(path, throwOnMissingSubKey: false);
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return false;
+        }
+        catch (System.Security.SecurityException)
+        {
+            return false;
+        }
+
+        using var check = Registry.LocalMachine.OpenSubKey(path);
+        return check == null;
+    }
+
+    private bool FailedRegistryDelete(string taskName, string key)
+    {
+        _log.Warning(
+            $@"Scheduled task '{taskName}' left in place: TaskCache\{key} could not be removed. " +
+            "These keys are writable only by SYSTEM; an elevated administrator is refused.");
+        return false;
+    }
+
+    /// <summary>
+    /// Whether this process can write TaskCache at all.
+    /// </summary>
+    /// <remarks>
+    /// Checked once up front so a run without the rights says so in one line, rather
+    /// than reporting a per-task failure several hundred times over.
+    /// </remarks>
+    private static bool CanWriteTaskCache()
+    {
+        try
+        {
+            using var key = Registry.LocalMachine.OpenSubKey($@"{TaskCache}\Tasks", writable: true);
+            return key != null;
+        }
+        catch
+        {
             return false;
         }
     }
