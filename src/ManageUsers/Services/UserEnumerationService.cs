@@ -19,7 +19,7 @@ public sealed class UserEnumerationService
         _log = log;
     }
 
-    public List<UserSessionInfo> GetUserSessions(HashSet<string> exclusions, bool protectAdmins, HashSet<string>? deletableAdmins = null)
+    public List<UserSessionInfo> GetUserSessions(HashSet<string> exclusions, HashSet<string> protectedSids, bool protectAdmins, HashSet<string>? deletableAdmins = null)
     {
         var results = new List<UserSessionInfo>();
         var profiles = LoadProfiles();
@@ -44,6 +44,12 @@ public sealed class UserEnumerationService
             if (string.IsNullOrEmpty(sid))
             {
                 _log.Warning($"Could not resolve SID for {name} — skipping");
+                continue;
+            }
+
+            if (protectedSids.Contains(sid))
+            {
+                _log.Info($"Skipping protected account (SID in protected_sids): {name}");
                 continue;
             }
 
@@ -94,7 +100,7 @@ public sealed class UserEnumerationService
     /// which would misclassify collision-suffixed profile directories (e.g.
     /// "jsmith.ECU" for local account "jsmith").
     /// </summary>
-    public List<StaleProfileInfo> GetStaleProfiles(HashSet<string> exclusions)
+    public List<StaleProfileInfo> GetStaleProfiles(HashSet<string> exclusions, HashSet<string> protectedSids)
     {
         var results = new List<StaleProfileInfo>();
 
@@ -163,6 +169,15 @@ public sealed class UserEnumerationService
             // for registry cleanup even when no local user owns it).
             profilesByNormalizedPath.TryGetValue(normalizedDir, out var profileEntry);
 
+            // The folder name is only the first profile's name for this user; a
+            // later profile for the same person gets a .DOMAIN or .000 suffix
+            // that no name-based exclusion matches. The SID is the same for all.
+            if (profileEntry != null && protectedSids.Contains(profileEntry.Sid))
+            {
+                _log.Info($"Skipping protected profile (SID in protected_sids): {folderName}");
+                continue;
+            }
+
             DateTime creationDate;
             try
             {
@@ -226,7 +241,7 @@ public sealed class UserEnumerationService
     /// engine remediates them regardless of retention policy. Only profiles not owned
     /// by a local account are considered; loaded hives are skipped by the deleter.
     /// </summary>
-    public List<StaleProfileInfo> GetCorruptProfiles(HashSet<string> exclusions)
+    public List<StaleProfileInfo> GetCorruptProfiles(HashSet<string> exclusions, HashSet<string> protectedSids)
     {
         var results = new List<StaleProfileInfo>();
 
@@ -260,7 +275,7 @@ public sealed class UserEnumerationService
             // A gutted folder may still hold user files (Desktop, Documents) — for
             // excluded accounts surface it instead of deleting. Dangling entries have
             // no folder, so there is nothing to preserve even for exclusions.
-            if (folderExists && exclusions.Contains(folderName))
+            if (folderExists && (exclusions.Contains(folderName) || protectedSids.Contains(profile.Sid)))
             {
                 _log.Warning($"Corrupt profile state for excluded account {folderName}: {reason} — not remediating, manual review needed");
                 continue;
@@ -300,7 +315,7 @@ public sealed class UserEnumerationService
     /// CreationDate comes from the account's password age rather than a profile
     /// directory that by definition does not exist. See GetAccountAgeFromPasswordAge.
     /// </summary>
-    public List<UserSessionInfo> FindOrphanedUsers(HashSet<string> exclusions, bool protectAdmins, HashSet<string>? deletableAdmins = null)
+    public List<UserSessionInfo> FindOrphanedUsers(HashSet<string> exclusions, HashSet<string> protectedSids, bool protectAdmins, HashSet<string>? deletableAdmins = null)
     {
         var orphans = new List<UserSessionInfo>();
         var profiles = LoadProfiles();
@@ -334,6 +349,12 @@ public sealed class UserEnumerationService
                 if (string.IsNullOrEmpty(sid))
                 {
                     _log.Warning($"Could not resolve SID for orphan candidate {name} -- skipping");
+                    continue;
+                }
+
+                if (protectedSids.Contains(sid))
+                {
+                    _log.Info($"Skipping protected orphan candidate (SID in protected_sids): {name}");
                     continue;
                 }
 
@@ -386,6 +407,17 @@ public sealed class UserEnumerationService
             _log.Warning($"Could not derive an account age for {username} ({ex.Message}) -- treating it as newly created");
             return DateTime.Now;
         }
+    }
+
+    /// <summary>
+    /// Names of every local account, enabled or disabled.
+    /// </summary>
+    public HashSet<string> GetLocalAccountNames()
+    {
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (name, _, _) in EnumerateLocalUsers())
+            names.Add(name);
+        return names;
     }
 
     #region Administrators Group Membership (netapi32 P/Invoke)

@@ -96,7 +96,7 @@ public sealed class UserDeletionService
         return true;
     }
 
-    public void ProcessDeferredDeletions(SessionsData sessions)
+    public void ProcessDeferredDeletions(SessionsData sessions, HashSet<string> exclusions)
     {
         if (sessions.DeferredDeletes.Count == 0)
             return;
@@ -106,6 +106,15 @@ public sealed class UserDeletionService
 
         foreach (var user in toProcess)
         {
+            // A deferral was decided on an earlier run. If the account has been
+            // excluded since, the exclusion wins and the deferral is dropped.
+            if (exclusions.Contains(user))
+            {
+                _log.Info($"Deferred user {user} is now excluded — dropping the deferred deletion");
+                ClearDeferred(user, sessions);
+                continue;
+            }
+
             if (IsUserAtConsole(user))
             {
                 _log.Info($"Deferred user {user} still at console — skipping");

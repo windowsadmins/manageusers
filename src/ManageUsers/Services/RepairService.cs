@@ -48,7 +48,14 @@ public sealed class RepairService
     /// Hide excluded service/system accounts from the Windows login screen.
     /// Sets SpecialAccounts\UserList registry entries.
     /// </summary>
-    public void UpdateHiddenUsers(HashSet<string> exclusions)
+    /// <remarks>
+    /// Only names that exist as local accounts are written. UserList hides local
+    /// accounts; a value for a name with no local account does nothing except sit
+    /// in the registry. The exclusion list can carry directory users -- a
+    /// generated list of staff to protect runs to thousands of names -- and none of
+    /// those should become registry values on every device.
+    /// </remarks>
+    public void UpdateHiddenUsers(HashSet<string> exclusions, HashSet<string> localAccounts)
     {
         const string regPath = @"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccounts\UserList";
 
@@ -61,8 +68,12 @@ public sealed class RepairService
                 return;
             }
 
+            var written = 0;
             foreach (var user in exclusions)
             {
+                if (!localAccounts.Contains(user))
+                    continue;
+
                 // Skip built-in accounts that Windows already hides
                 if (user.Equals("Administrator", StringComparison.OrdinalIgnoreCase)
                     || user.Equals("DefaultAccount", StringComparison.OrdinalIgnoreCase)
@@ -72,9 +83,10 @@ public sealed class RepairService
                     continue;
 
                 key.SetValue(user, 0, Microsoft.Win32.RegistryValueKind.DWord);
+                written++;
             }
 
-            _log.Info($"Updated hidden users list ({exclusions.Count} entries)");
+            _log.Info($"Updated hidden users list ({written} local account(s) of {exclusions.Count} exclusions)");
         }
         catch (Exception ex)
         {

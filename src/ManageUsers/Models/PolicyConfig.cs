@@ -11,6 +11,31 @@ public sealed class PolicyConfig
     public List<string> Exclusions { get; set; } = [];
 
     /// <summary>
+    /// Security identifiers whose profiles and accounts are never deleted, whatever
+    /// the profile folder is called.
+    /// </summary>
+    /// <remarks>
+    /// <c>exclusions:</c> can only match a name, and for a directory account the
+    /// only name ManageUsers sees is the profile folder. That folder is not a stable
+    /// identifier: when a second profile arrives for the same user -- a domain
+    /// profile and later an Entra profile after the device changes join type, or a
+    /// profile recreated after a partial delete -- Windows names the new folder
+    /// <c>user.DOMAIN</c>, <c>user.000</c> and so on, and an exclusion for
+    /// <c>user</c> no longer matches it. The SID does not change, so a list of SIDs
+    /// protects every profile the user has on the device.
+    ///
+    /// Entra ID accounts sign in with an S-1-12-1 SID derived from the user's
+    /// object id; on-premises domain accounts use their S-1-5-21 domain SID. A
+    /// generator can emit both from a directory group without any device-side
+    /// lookup. Matched case-insensitively, exact.
+    ///
+    /// A client that predates this key ignores it (IgnoreUnmatchedProperties), so
+    /// the list can ship ahead of the client that reads it.
+    /// </remarks>
+    [YamlMember(Alias = "protected_sids")]
+    public List<string> ProtectedSids { get; set; } = [];
+
+    /// <summary>
     /// When false (the default), any local account that is a member of the local
     /// Administrators group is never deleted — even if it has no profile, has never
     /// logged in, or is past the age threshold. Set to true to opt in to deleting
@@ -40,6 +65,14 @@ public sealed class PolicyConfig
 
     [YamlMember(Alias = "end_of_term_dates")]
     public List<TermDate> EndOfTermDates { get; set; } = [];
+
+    /// <summary>
+    /// Set when Config.yaml exists but could not be parsed. The run then deletes
+    /// nothing, including the corrupt-profile remediation that otherwise bypasses
+    /// retention policy, because the exclusions it would have honoured are unknown.
+    /// </summary>
+    [YamlIgnore]
+    public bool Unreadable { get; set; }
 }
 
 /// <summary>

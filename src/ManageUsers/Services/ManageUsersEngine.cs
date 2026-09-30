@@ -49,6 +49,7 @@ public sealed class ManageUsersEngine
             var sessions = _config.LoadSessions();
             var inventory = _config.LoadInventory();
             var exclusions = _config.GetEffectiveExclusions(sessions, _policyConfig.Exclusions);
+            var protectedSids = _config.GetProtectedSids(_policyConfig.ProtectedSids);
             var protectAdmins = !_policyConfig.DeleteAdmins;
 
             // Specific admin accounts an operator has opted in to deleting while the
@@ -61,16 +62,17 @@ public sealed class ManageUsersEngine
             }
 
             _log.Info($"Exclusions loaded: {exclusions.Count} users");
+            _log.Info($"Protected SIDs loaded: {protectedSids.Count}");
             _log.Info($"Administrator protection: {(protectAdmins ? "ENABLED — local admins are never deleted (delete_admins: false)" : "DISABLED — admins are eligible for deletion (delete_admins: true)")}");
             if (protectAdmins && deletableAdmins.Count > 0)
                 _log.Info($"Admins explicitly opted in to deletion (deletable_admins): {string.Join(", ", deletableAdmins)}");
             _log.Info($"Inventory: area={inventory.Area}, location={inventory.Location}, usage={inventory.Usage}");
 
             // Process deferred deletions from previous runs
-            _delete.ProcessDeferredDeletions(sessions);
+            _delete.ProcessDeferredDeletions(sessions, exclusions);
 
             // Gather user session data
-            var users = _enum.GetUserSessions(exclusions, protectAdmins, deletableAdmins);
+            var users = _enum.GetUserSessions(exclusions, protectedSids, protectAdmins, deletableAdmins);
             _log.Info($"Found {users.Count} non-excluded user(s) to evaluate");
 
             // Repair user states
@@ -105,7 +107,7 @@ public sealed class ManageUsersEngine
             // deleted here unconditionally, which meant a device set to duration_days:
             // -1 still lost accounts, and a shared-lab account created that afternoon
             // was reaped at 03:00 before anyone could log in and give it a profile.
-            var orphanCandidates = _enum.FindOrphanedUsers(exclusions, protectAdmins, deletableAdmins);
+            var orphanCandidates = _enum.FindOrphanedUsers(exclusions, protectedSids, protectAdmins, deletableAdmins);
             if (orphanCandidates.Count > 0)
             {
                 _log.Info($"Found {orphanCandidates.Count} orphan candidate(s) with no profile");
@@ -129,7 +131,7 @@ public sealed class ManageUsersEngine
             }
 
             // Clean up stale Entra/cached profiles (no local account)
-            var staleProfiles = _enum.GetStaleProfiles(exclusions);
+            var staleProfiles = _enum.GetStaleProfiles(exclusions, protectedSids);
             if (staleProfiles.Count > 0)
             {
                 _log.Info($"Found {staleProfiles.Count} stale profile(s) with no local account");
@@ -147,7 +149,11 @@ public sealed class ManageUsersEngine
             // ProfileList entries, folders missing NTUSER.DAT). These break the next
             // logon for that SID, so they bypass retention policy. Runs after the
             // stale-profile pass so freshly removed profiles aren't re-evaluated.
-            var corruptProfiles = _enum.GetCorruptProfiles(exclusions);
+            var corruptProfiles = _policyConfig.Unreadable
+                ? []
+                : _enum.GetCorruptProfiles(exclusions, protectedSids);
+            if (_policyConfig.Unreadable)
+                _log.Warning("Config.yaml is unreadable — skipping corrupt-profile remediation this run");
             if (corruptProfiles.Count > 0)
             {
                 _log.Info($"Found {corruptProfiles.Count} corrupt profile(s) to remediate");
@@ -170,7 +176,7 @@ public sealed class ManageUsersEngine
             _perUserTasks.SweepOrphaned();
 
             // Update hidden users on login screen
-            _repair.UpdateHiddenUsers(exclusions);
+            _repair.UpdateHiddenUsers(exclusions, _enum.GetLocalAccountNames());
 
             var removed = _delete.RemovedItems;
             _log.Audit("RUN_SUMMARY", $"mode={(_simulate ? "simulate" : "live")} removed={removed.Count} items=[{string.Join(", ", removed)}]");

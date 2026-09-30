@@ -44,6 +44,7 @@ public sealed class ConfigService
                 _log.Warning("Config.yaml has no policies defined — using built-in defaults");
                 var defaults = GetDefaultPolicyConfig();
                 defaults.Exclusions = config?.Exclusions ?? [];
+                defaults.ProtectedSids = config?.ProtectedSids ?? [];
                 defaults.DeleteAdmins = config?.DeleteAdmins ?? false;
                 defaults.DeletableAdmins = config?.DeletableAdmins ?? [];
                 return defaults;
@@ -53,8 +54,15 @@ public sealed class ConfigService
         }
         catch (Exception ex)
         {
-            _log.Warning($"Failed to parse Config.yaml: {ex.Message} — using built-in defaults");
-            return GetDefaultPolicyConfig();
+            // A Config.yaml that exists but cannot be read is not the same as no
+            // Config.yaml. Its exclusions and protected SIDs are unknown, and the
+            // built-in 28-day default would then reap the very accounts the file
+            // was written to protect. Refuse to delete until the file is fixed.
+            _log.Error($"Failed to parse Config.yaml: {ex.Message} — deleting nothing this run (never-delete fallback)");
+            var fallback = GetDefaultPolicyConfig();
+            fallback.DefaultPolicy = new DefaultPolicyRule { DurationDays = -1, Strategy = "login_and_creation" };
+            fallback.Unreadable = true;
+            return fallback;
         }
     }
 
@@ -135,6 +143,36 @@ public sealed class ConfigService
         }
 
         return exclusions;
+    }
+
+    /// <summary>
+    /// Returns the set of SIDs from Config.yaml <c>protected_sids:</c>. Entries that
+    /// are not SID strings are dropped with a warning rather than failing the run:
+    /// a malformed entry cannot protect anything, and dropping it leaves every
+    /// well-formed entry in force.
+    /// </summary>
+    public HashSet<string> GetProtectedSids(List<string>? configSids)
+    {
+        var sids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (configSids == null) return sids;
+
+        var rejected = 0;
+        foreach (var entry in configSids)
+        {
+            var sid = entry?.Trim();
+            if (string.IsNullOrEmpty(sid)) continue;
+            if (!sid.StartsWith("S-1-", StringComparison.OrdinalIgnoreCase))
+            {
+                rejected++;
+                continue;
+            }
+            sids.Add(sid);
+        }
+
+        if (rejected > 0)
+            _log.Warning($"Ignored {rejected} protected_sids entr{(rejected == 1 ? "y" : "ies")} that are not SID strings");
+
+        return sids;
     }
 
     private static string? GetConsoleUser()
