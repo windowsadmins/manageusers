@@ -90,6 +90,22 @@ Exclusions are merged from three sources (all case-insensitive):
 
 The currently logged-in console user is also excluded automatically.
 
+Exclusions match by name, and for a directory (Entra ID or domain) account the only name ManageUsers sees is the profile folder, so an exclusion for `jsmith` does not cover a second profile for the same person named `jsmith.CONTOSO` or `jsmith.000`. Only exclusions that exist as local accounts are hidden from the sign-in screen.
+
+### Protected SIDs
+
+`protected_sids:` in Config.yaml lists security identifiers whose profiles and accounts are never deleted, whatever the profile folder is called — including under `--force` and end-of-term force deletion. Use it for people who must never lose a profile, for example a generated list of staff drawn from a directory group:
+
+```yaml
+protected_sids:
+  - S-1-12-1-1111111111-2222222222-3333333333-4444444444
+  - S-1-5-21-1111111111-2222222222-3333333333-1001
+```
+
+An Entra ID account signs in with an `S-1-12-1-` SID built from its object id: the id's 16 bytes, in .NET `Guid.ToByteArray()` order, read as four little-endian 32-bit unsigned integers. A domain account uses its domain SID (`onPremisesSecurityIdentifier` in Microsoft Graph for a synced user). Entries that are not SID strings are ignored with a warning. Clients older than this key ignore it.
+
+If Config.yaml exists but cannot be parsed, ManageUsers deletes nothing that run, and skips corrupt-profile remediation, rather than falling back to the built-in 28-day default.
+
 ### Sessions
 `C:\ProgramData\Management\ManageUsers\Sessions.yaml` — machine-specific exclusions and deferred state:
 ```yaml
