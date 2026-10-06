@@ -61,13 +61,18 @@ foreach ($task in Get-ScheduledTask -ErrorAction SilentlyContinue) {
     }
 }
 
-# Remove the old copy: ours only, never anything else in the shared folder.
-if (($installLocation.TrimEnd('\') -ine $legacyDir) -and (Test-Path -LiteralPath $legacyBinary)) {
-    try {
-        Remove-Item -LiteralPath $legacyBinary -Force
-        Write-Host "[ManageUsers] Removed the old copy at $legacyBinary" -ForegroundColor Gray
-    } catch {
-        Write-Host "[ManageUsers] WARNING: could not remove $legacyBinary : $($_.Exception.Message)" -ForegroundColor Yellow
+# Remove the old copies: ours only, never anything else in the shared folder. Test builds
+# of the app installed in its own folder there.
+$legacyApp = Join-Path $legacyDir 'Managed Users Cleanup'
+if ($installLocation.TrimEnd('\') -ine $legacyDir) {
+    foreach ($old in @($legacyBinary, $legacyApp)) {
+        if (-not (Test-Path -LiteralPath $old)) { continue }
+        try {
+            Remove-Item -LiteralPath $old -Recurse -Force
+            Write-Host "[ManageUsers] Removed the old copy at $old" -ForegroundColor Gray
+        } catch {
+            Write-Host "[ManageUsers] WARNING: could not remove $old : $($_.Exception.Message)" -ForegroundColor Yellow
+        }
     }
 }
 
@@ -201,6 +206,26 @@ DeferredDeletes: []
 '@
     Set-Content -Path $sessionsFile -Value $sessionsTemplate -Encoding UTF8
     Write-Host '[ManageUsers] Initialized Sessions.yaml from template' -ForegroundColor Gray
+}
+
+# Managed Users Cleanup, the settings and run app, installs beside manageusers.exe.
+# Give it a Start menu entry for every user.
+$appExe = Join-Path $installLocation 'Managed Users Cleanup.exe'
+if (Test-Path $appExe) {
+    $shortcutPath = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\Managed Users Cleanup.lnk'
+    try {
+        $shell = New-Object -ComObject WScript.Shell
+        $shortcut = $shell.CreateShortcut($shortcutPath)
+        $shortcut.TargetPath = $appExe
+        $shortcut.WorkingDirectory = Split-Path $appExe -Parent
+        $shortcut.Description = 'Settings, simulation and cleanup for ManageUsers'
+        $shortcut.Save()
+        Write-Host "[ManageUsers] Start menu shortcut: $shortcutPath" -ForegroundColor Gray
+    } catch {
+        Write-Host "[ManageUsers] WARNING: could not create the Start menu shortcut: $($_.Exception.Message)" -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "[ManageUsers] Managed Users Cleanup not in this package; no Start menu shortcut" -ForegroundColor Gray
 }
 
 Write-Host ''

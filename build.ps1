@@ -11,6 +11,7 @@
 #   .\build.ps1 -Architecture arm64      # Build single architecture
 #   .\build.ps1 -ListCerts               # List available code signing certificates
 #   .\build.ps1 -Clean                   # Clean build output first
+#   .\build.ps1 -SkipApp                 # CLI only, without the Managed Users Cleanup app
 
 [CmdletBinding()]
 param(
@@ -22,12 +23,17 @@ param(
     [switch]$ListCerts,
     [string]$FindCertSubject,
     [switch]$Msi,
-    [switch]$Nupkg
+    [switch]$Nupkg,
+    [switch]$SkipApp
 )
 
 $ErrorActionPreference = 'Stop'
 $RootDir = $PSScriptRoot
 $ProjectPath = Join-Path $RootDir 'src' 'ManageUsers' 'ManageUsers.csproj'
+$AppProjectDir = Join-Path $RootDir 'src' 'ManageUsers.App'
+$AppProjectPath = Join-Path $AppProjectDir 'ManageUsers.App.csproj'
+# The app installs beside manageusers.exe in ManageUsers' own folder.
+$AppExeName = 'Managed Users Cleanup.exe'
 $OutputDir = Join-Path $RootDir 'release'
 $Configuration = 'Release'
 $TimeStampServer = 'http://timestamp.digicert.com'
@@ -243,6 +249,89 @@ if ($FindCertSubject) {
     return
 }
 
+# Generates resources.pri and copies XBF binary XAML files to the app's publish output.
+#
+# EnableCoreMrtTooling=false is set in ManageUsers.App.csproj because the standard PriGen
+# step needs the Visual Studio UWP workload. This replicates it: copy the XBF files from
+# obj\ beside the exe, then run makepri.exe over them plus the WinUI framework PRI files,
+# whose embedded resources (themeresources.xbf and so on) it merges into resources.pri.
+function Publish-AppResources {
+    param(
+        [Parameter(Mandatory)][string]$Arch,
+        [Parameter(Mandatory)][string]$OutputDir,
+        [Parameter(Mandatory)][string]$AppProjectDir
+    )
+
+    Write-Log "Generating XAML resources (XBF + resources.pri) for the app ($Arch)..." 'INFO'
+
+    $makepri = $null
+    $sdkBinRoots = @(
+        "$env:ProgramFiles\Windows Kits\10\bin",
+        "${env:ProgramFiles(x86)}\Windows Kits\10\bin"
+    ) | Where-Object { Test-Path $_ }
+
+    # makepri.exe runs on the build host, so prefer the host's architecture.
+    $hostArch = switch ($env:PROCESSOR_ARCHITECTURE) {
+        'AMD64' { 'x64' }
+        'ARM64' { 'arm64' }
+        default { 'x86' }
+    }
+    $toolArchOrder = @($hostArch) + (@('x64', 'arm64', 'x86') | Where-Object { $_ -ne $hostArch })
+
+    foreach ($root in $sdkBinRoots) {
+        foreach ($toolArch in $toolArchOrder) {
+            $candidates = Get-ChildItem "$root\*\$toolArch\makepri.exe" -ErrorAction SilentlyContinue |
+                Sort-Object { [version]($_.FullName -replace '.*\\(\d+\.\d+\.\d+\.\d+)\\.*', '$1') } -Descending |
+                Select-Object -First 1
+            if ($candidates) { $makepri = $candidates.FullName; break }
+        }
+        if ($makepri) { break }
+    }
+
+    if (-not $makepri) {
+        Write-Log 'makepri.exe not found in the Windows SDK: install the Windows 10/11 SDK' 'ERROR'
+        return $false
+    }
+
+    $xbfFiles = Get-ChildItem "$AppProjectDir\obj\Release" -Recurse -Filter '*.xbf' -ErrorAction SilentlyContinue |
+        Where-Object { $_.FullName -match [regex]::Escape("\win-$Arch\") }
+    if (-not $xbfFiles) {
+        Write-Log "No XBF files found in obj\Release for win-$Arch" 'ERROR'
+        return $false
+    }
+    $xbfRootPath = ($xbfFiles[0].FullName -split [regex]::Escape("\win-$Arch\"))[0] + "\win-$Arch"
+
+    $stagingDir = Join-Path ([System.IO.Path]::GetTempPath()) "manageusers-pri-$Arch"
+    if (Test-Path $stagingDir) { Remove-Item $stagingDir -Recurse -Force }
+    New-Item -ItemType Directory $stagingDir | Out-Null
+
+    # MRT resolves the XBF paths in resources.pri relative to the exe, so they are needed
+    # in the output as well as in the staging folder makepri indexes.
+    foreach ($xbf in $xbfFiles) {
+        $relativePath = $xbf.FullName.Substring($xbfRootPath.Length).TrimStart('\')
+        foreach ($dest in @((Join-Path $stagingDir $relativePath), (Join-Path $OutputDir $relativePath))) {
+            $destDir = Split-Path $dest
+            if (-not (Test-Path $destDir)) { New-Item -ItemType Directory $destDir | Out-Null }
+            Copy-Item $xbf.FullName $dest -Force
+        }
+    }
+
+    foreach ($pri in Get-ChildItem $OutputDir -Filter 'Microsoft.*.pri') {
+        Copy-Item $pri.FullName (Join-Path $stagingDir $pri.Name) -Force
+    }
+
+    $priconfigPath = Join-Path $stagingDir 'priconfig.xml'
+    & $makepri createconfig /cf $priconfigPath /dq 'en-US' /pv '10.0.0' /o 2>&1 | Out-Null
+    $outPriPath = Join-Path $OutputDir 'resources.pri'
+    $priOutput = & $makepri new /pr $stagingDir /cf $priconfigPath /in 'ManageUsers' /of $outPriPath /o 2>&1
+    $ok = $LASTEXITCODE -eq 0
+    if (-not $ok) { Write-Log "makepri.exe failed (exit $LASTEXITCODE): $priOutput" 'ERROR' }
+    else { Write-Log "Generated resources.pri ($($xbfFiles.Count) XBF file(s))" 'SUCCESS' }
+
+    Remove-Item $stagingDir -Recurse -Force -ErrorAction SilentlyContinue
+    return $ok
+}
+
 # --- Main build ---
 
 Write-Host ''
@@ -304,7 +393,11 @@ if ($Clean) {
     # Also clean intermediate build artifacts
     $cleanPaths = @(
         (Join-Path $RootDir 'src' 'ManageUsers' 'bin'),
-        (Join-Path $RootDir 'src' 'ManageUsers' 'obj')
+        (Join-Path $RootDir 'src' 'ManageUsers' 'obj'),
+        (Join-Path $RootDir 'src' 'ManageUsers.Core' 'bin'),
+        (Join-Path $RootDir 'src' 'ManageUsers.Core' 'obj'),
+        (Join-Path $AppProjectDir 'bin'),
+        (Join-Path $AppProjectDir 'obj')
     )
     foreach ($p in $cleanPaths) {
         if (Test-Path $p) { Remove-Item $p -Recurse -Force }
@@ -345,6 +438,21 @@ foreach ($arch in $archs) {
 
     $exeSize = [math]::Round((Get-Item $exePath).Length / 1MB, 2)
     Write-Log "Built manageusers.exe ($runtime) - ${exeSize} MB" 'SUCCESS'
+
+    if (-not $SkipApp) {
+        # The app is a self-contained WinUI 3 folder, published to release\<arch>\app.
+        $appOutput = Join-Path $archOutput 'app'
+        if (Test-Path $appOutput) { Remove-Item $appOutput -Recurse -Force }
+        Write-Log "Publishing $AppExeName for $runtime..." 'INFO'
+        & dotnet publish $AppProjectPath --configuration $Configuration --runtime $runtime --self-contained true `
+            --output $appOutput "-p:Version=$Version" "-p:AssemblyVersion=$Version" "-p:FileVersion=$Version" --verbosity minimal
+        if ($LASTEXITCODE -ne 0) { throw "App build failed for $runtime" }
+        if (-not (Test-Path (Join-Path $appOutput $AppExeName))) { throw "Expected app output not found: $AppExeName" }
+        if (-not (Publish-AppResources -Arch $arch -OutputDir (Resolve-Path $appOutput).Path -AppProjectDir $AppProjectDir)) {
+            throw "XAML resource generation failed for $runtime; the app would not start without resources.pri"
+        }
+        Write-Log "Built $AppExeName ($runtime)" 'SUCCESS'
+    }
 }
 
 # Sign
@@ -352,7 +460,9 @@ if ($SigningCert) {
     Write-Host ''
     foreach ($arch in $archs) {
         $archDir = Join-Path $OutputDir $arch
-        $exeFiles = Get-ChildItem -Path $archDir -Filter '*.exe' -File -ErrorAction SilentlyContinue
+        $exeFiles = @(Get-ChildItem -Path $archDir -Filter '*.exe' -File -ErrorAction SilentlyContinue)
+        $appExe = Join-Path $archDir 'app' $AppExeName
+        if (Test-Path $appExe) { $exeFiles += Get-Item $appExe }
         foreach ($exe in $exeFiles) {
             Invoke-SignArtifact -Path $exe.FullName -CertThumbprint $SigningCert.Thumbprint -Store $SigningCert.Store
         }
@@ -392,10 +502,15 @@ foreach ($arch in $archs) {
     $buildInfoContent = $buildInfoTemplate -replace '\$\{ARCH\}', $arch
     Set-Content -Path $buildInfoFile -Value $buildInfoContent -Encoding UTF8 -NoNewline
 
-    # Stage payload — only the signed binary
+    # Stage payload: the signed CLI, and the app's files beside it
     if (Test-Path $payloadDir) { Remove-Item $payloadDir -Recurse -Force }
     New-Item -ItemType Directory -Path $payloadDir -Force | Out-Null
     Copy-Item -Path $sourceExe -Destination (Join-Path $payloadDir 'manageusers.exe') -Force
+    $appSource = Join-Path $OutputDir $arch 'app'
+    if (-not $SkipApp) {
+        if (-not (Test-Path (Join-Path $appSource $AppExeName))) { throw "App not built for ${arch}: $appSource" }
+        Copy-Item -Path (Join-Path $appSource '*') -Destination $payloadDir -Recurse -Force
+    }
 
     # Build .msi
     Write-Log "Building .msi for $arch..." 'INFO'

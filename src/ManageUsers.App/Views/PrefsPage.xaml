@@ -1,0 +1,370 @@
+<Page
+    x:Class="ManageUsers.App.Views.PrefsPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:vm="using:ManageUsers.App.ViewModels"
+    NavigationCacheMode="Required">
+
+    <Page.Resources>
+        <Style x:Key="CardStyle" TargetType="Border">
+            <Setter Property="Background" Value="{ThemeResource CardBackgroundFillColorDefaultBrush}" />
+            <Setter Property="BorderBrush" Value="{ThemeResource CardStrokeColorDefaultBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="8" />
+            <Setter Property="Padding" Value="20" />
+        </Style>
+        <Style x:Key="SourceTextStyle" TargetType="TextBlock" BasedOn="{StaticResource CaptionTextBlockStyle}">
+            <Setter Property="Foreground" Value="{ThemeResource TextFillColorTertiaryBrush}" />
+        </Style>
+
+        <!-- A removable entry in a name or date list. -->
+        <DataTemplate x:Key="ListEntryTemplate" x:DataType="x:String">
+            <Grid ColumnSpacing="8" Padding="0,2">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="{x:Bind}" VerticalAlignment="Center" />
+                <Button Grid.Column="1" Tag="{x:Bind}" Click="RemoveEntry_Click" Padding="6,4"
+                        ToolTipService.ToolTip="Remove">
+                    <FontIcon Glyph="&#xE711;" FontSize="12" />
+                </Button>
+            </Grid>
+        </DataTemplate>
+    </Page.Resources>
+
+    <Grid>
+        <ScrollViewer Padding="28,24,28,24">
+            <StackPanel Spacing="20" MaxWidth="1040" HorizontalAlignment="Stretch">
+
+            <!-- ═══ App Info Header ═══ -->
+            <StackPanel HorizontalAlignment="Center" Spacing="8" Margin="0,8,0,4">
+                <Image x:Name="AppIcon" Width="64" Height="64" HorizontalAlignment="Center" />
+
+                <TextBlock Text="Managed Users Cleanup"
+                           Style="{StaticResource TitleTextBlockStyle}"
+                           HorizontalAlignment="Center" />
+
+                <TextBlock Text="Removes inactive local accounts and leftover profiles from shared devices, by rules matched against the device's inventory."
+                           Style="{StaticResource CaptionTextBlockStyle}"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                           TextAlignment="Center" MaxWidth="520"
+                           TextWrapping="WrapWholeWords" />
+
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Spacing="16">
+                    <HyperlinkButton Content="Documentation"
+                                     NavigateUri="https://github.com/windowsadmins/manageusers#readme" />
+                    <HyperlinkButton Content="Report Issue"
+                                     NavigateUri="https://github.com/windowsadmins/manageusers/issues" />
+                </StackPanel>
+
+                <TextBlock Text="{x:Bind ViewModel.VersionDisplay, Mode=OneWay}"
+                           Style="{StaticResource CaptionTextBlockStyle}"
+                           Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                           HorizontalAlignment="Center" />
+            </StackPanel>
+
+            <!-- ═══ Read-only banner: settings live in HKLM, so editing needs elevation ═══ -->
+            <Border Style="{StaticResource CardStyle}" Padding="16,12"
+                    Visibility="{x:Bind ViewModel.IsReadOnly, Mode=OneWay, Converter={StaticResource BoolToVisibility}}">
+                <StackPanel Spacing="6">
+                    <Grid ColumnSpacing="12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <FontIcon Grid.Column="0" Glyph="&#xE72E;" FontSize="16" VerticalAlignment="Center"
+                                  Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                        <TextBlock Grid.Column="1" VerticalAlignment="Center" TextWrapping="WrapWholeWords"
+                                   Text="Settings are read-only. Unlock to change them (requires administrator)." />
+                        <Button Grid.Column="2" x:Name="UnlockButton" Click="UnlockButton_Click"
+                                ToolTipService.ToolTip="Relaunch as administrator to edit settings">
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <FontIcon Glyph="&#xEA18;" FontSize="14" />
+                                <TextBlock Text="Unlock" />
+                            </StackPanel>
+                        </Button>
+                    </Grid>
+                    <TextBlock Text="{x:Bind ViewModel.UnlockError, Mode=OneWay}"
+                               Style="{StaticResource CaptionTextBlockStyle}"
+                               Foreground="{ThemeResource SystemFillColorCriticalBrush}"
+                               TextWrapping="Wrap"
+                               Visibility="{x:Bind ViewModel.HasUnlockError, Mode=OneWay, Converter={StaticResource BoolToVisibility}}" />
+                </StackPanel>
+            </Border>
+
+            <Grid ColumnSpacing="12"
+                  Visibility="{x:Bind ViewModel.IsElevated, Mode=OneWay, Converter={StaticResource BoolToVisibility}}">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                    <FontIcon Glyph="&#xEA18;" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    <TextBlock Text="Running as administrator. Changes save to this device's machine settings, above Config.yaml and below policy."
+                               Style="{StaticResource CaptionTextBlockStyle}" TextWrapping="WrapWholeWords"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                </StackPanel>
+                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center"
+                            Visibility="{x:Bind ViewModel.IsSaveStatusVisible, Mode=OneWay, Converter={StaticResource BoolToVisibility}}">
+                    <FontIcon Glyph="{x:Bind ViewModel.SaveStatusGlyph, Mode=OneWay}" FontSize="12" />
+                    <TextBlock Text="{x:Bind ViewModel.SaveStatusMessage, Mode=OneWay}" Style="{StaticResource CaptionTextBlockStyle}" />
+                </StackPanel>
+                <Button Grid.Column="2" Content="Clear device settings" Click="ClearMachineSettings_Click"
+                        IsEnabled="{x:Bind ViewModel.HasMachineSettings, Mode=OneWay}"
+                        ToolTipService.ToolTip="Remove every setting saved on this device, so Config.yaml and the defaults apply again" />
+            </Grid>
+
+            <InfoBar Severity="Warning" IsOpen="{x:Bind ViewModel.HasConfigFileWarning, Mode=OneWay}" IsClosable="False"
+                     Title="Some settings are ignored" Message="{x:Bind ViewModel.ConfigFileWarning, Mode=OneWay}" />
+
+            <!-- ═══ Settings Grid ═══ -->
+            <Grid ColumnSpacing="16" RowSpacing="16">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <!-- ── Exclusions Card ── -->
+                <Border Grid.Row="0" Grid.Column="0" Style="{StaticResource CardStyle}">
+                <StackPanel Spacing="8">
+                    <StackPanel Orientation="Horizontal" Spacing="10" Margin="0,0,0,4">
+                        <FontIcon Glyph="&#xE8F8;" FontSize="20"
+                                  Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" VerticalAlignment="Center" />
+                        <TextBlock Text="Never delete" Style="{StaticResource SubtitleTextBlockStyle}" VerticalAlignment="Center" />
+                    </StackPanel>
+                    <TextBlock Text="Accounts kept on every run, alongside the built-in accounts, this device's Sessions.yaml list and whoever is signed in."
+                               Style="{StaticResource CaptionTextBlockStyle}" TextWrapping="WrapWholeWords"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    <ListView x:Name="ExclusionsList" ItemsSource="{x:Bind ViewModel.Exclusions}" Tag="Exclusions"
+                              ItemTemplate="{StaticResource ListEntryTemplate}" SelectionMode="None" MaxHeight="220"
+                              IsEnabled="{x:Bind ViewModel.CanEditExclusions, Mode=OneWay}" />
+                    <Grid ColumnSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBox Text="{x:Bind ViewModel.NewExclusion, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                 PlaceholderText="Account name" KeyDown="AddExclusionBox_KeyDown"
+                                 AutomationProperties.Name="New never-delete account"
+                                 IsEnabled="{x:Bind ViewModel.CanEditExclusions, Mode=OneWay}" />
+                        <Button Grid.Column="1" Content="Add" Click="AddExclusion_Click" AutomationProperties.Name="Add never-delete account"
+                                IsEnabled="{x:Bind ViewModel.CanEditExclusions, Mode=OneWay}" />
+                    </Grid>
+                    <TextBlock Text="{x:Bind ViewModel.ExclusionsSource, Mode=OneWay}" Style="{StaticResource SourceTextStyle}" />
+                </StackPanel>
+                </Border>
+
+                <!-- ── Administrators Card ── -->
+                <Border Grid.Row="0" Grid.Column="1" Style="{StaticResource CardStyle}">
+                <StackPanel Spacing="8">
+                    <StackPanel Orientation="Horizontal" Spacing="10" Margin="0,0,0,4">
+                        <FontIcon Glyph="&#xE7EF;" FontSize="20"
+                                  Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" VerticalAlignment="Center" />
+                        <TextBlock Text="Administrators" Style="{StaticResource SubtitleTextBlockStyle}" VerticalAlignment="Center" />
+                    </StackPanel>
+                    <ToggleSwitch OnContent="Local administrators can be deleted" OffContent="Local administrators are never deleted"
+                                  IsOn="{x:Bind ViewModel.DeleteAdmins, Mode=TwoWay}"
+                                  IsEnabled="{x:Bind ViewModel.CanEditDeleteAdmins, Mode=OneWay}" />
+                    <TextBlock Text="{x:Bind ViewModel.DeleteAdminsSource, Mode=OneWay}" Style="{StaticResource SourceTextStyle}" />
+
+                    <TextBlock Text="Administrators that can still be deleted while the guard is on" Style="{StaticResource CaptionTextBlockStyle}" Margin="0,8,0,0" />
+                    <ListView ItemsSource="{x:Bind ViewModel.DeletableAdmins}" Tag="DeletableAdmins"
+                              ItemTemplate="{StaticResource ListEntryTemplate}" SelectionMode="None" MaxHeight="160"
+                              IsEnabled="{x:Bind ViewModel.CanEditDeletableAdmins, Mode=OneWay}" />
+                    <Grid ColumnSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBox Text="{x:Bind ViewModel.NewDeletableAdmin, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                 PlaceholderText="Administrator account name" KeyDown="AddDeletableAdminBox_KeyDown"
+                                 AutomationProperties.Name="New deletable administrator"
+                                 IsEnabled="{x:Bind ViewModel.CanEditDeletableAdmins, Mode=OneWay}" />
+                        <Button Grid.Column="1" Content="Add" Click="AddDeletableAdmin_Click" AutomationProperties.Name="Add deletable administrator"
+                                IsEnabled="{x:Bind ViewModel.CanEditDeletableAdmins, Mode=OneWay}" />
+                    </Grid>
+                    <TextBlock Text="{x:Bind ViewModel.DeletableAdminsSource, Mode=OneWay}" Style="{StaticResource SourceTextStyle}" />
+                </StackPanel>
+                </Border>
+
+                <!-- ── Default Policy Card ── -->
+                <Border Grid.Row="1" Grid.Column="0" Style="{StaticResource CardStyle}">
+                <StackPanel Spacing="8">
+                    <StackPanel Orientation="Horizontal" Spacing="10" Margin="0,0,0,4">
+                        <FontIcon Glyph="&#xE823;" FontSize="20"
+                                  Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" VerticalAlignment="Center" />
+                        <TextBlock Text="When no rule matches" Style="{StaticResource SubtitleTextBlockStyle}" VerticalAlignment="Center" />
+                    </StackPanel>
+
+                    <TextBlock Text="Delete after" Style="{StaticResource CaptionTextBlockStyle}" />
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <NumberBox Value="{x:Bind ViewModel.DefaultDurationDays, Mode=TwoWay}" Minimum="-1" Maximum="3650"
+                                   SpinButtonPlacementMode="Compact" SmallChange="1" Width="120"
+                                   IsEnabled="{x:Bind ViewModel.CanEditDefaultDuration, Mode=OneWay}" />
+                        <TextBlock Text="days (-1 never deletes)" VerticalAlignment="Center"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    </StackPanel>
+                    <TextBlock Text="{x:Bind ViewModel.DefaultDurationSource, Mode=OneWay}" Style="{StaticResource SourceTextStyle}" />
+
+                    <TextBlock Text="Counting from" Style="{StaticResource CaptionTextBlockStyle}" Margin="0,4,0,0" />
+                    <ComboBox SelectedIndex="{x:Bind ViewModel.DefaultStrategyIndex, Mode=TwoWay}" MinWidth="260"
+                              IsEnabled="{x:Bind ViewModel.CanEditDefaultStrategy, Mode=OneWay}">
+                        <ComboBoxItem Content="Last login and account creation" />
+                        <ComboBoxItem Content="Account creation only" />
+                    </ComboBox>
+                    <TextBlock Text="{x:Bind ViewModel.DefaultStrategySource, Mode=OneWay}" Style="{StaticResource SourceTextStyle}" />
+
+                    <ToggleSwitch Margin="0,4,0,0" OnContent="Delete every account at end of term" OffContent="Delete every account at end of term"
+                                  IsOn="{x:Bind ViewModel.DefaultForceAtEndOfTerm, Mode=TwoWay}"
+                                  IsEnabled="{x:Bind ViewModel.CanEditDefaultForce, Mode=OneWay}" />
+                    <TextBlock Text="{x:Bind ViewModel.DefaultForceSource, Mode=OneWay}" Style="{StaticResource SourceTextStyle}" />
+
+                    <TextBlock Text="Inventory file" Style="{StaticResource CaptionTextBlockStyle}" Margin="0,8,0,0" />
+                    <TextBox Text="{x:Bind ViewModel.InventoryPath, Mode=TwoWay}"
+                             PlaceholderText="C:\ProgramData\Management\Inventory.yaml"
+                             IsEnabled="{x:Bind ViewModel.CanEditInventoryPath, Mode=OneWay}" />
+                    <TextBlock Text="{x:Bind ViewModel.InventoryPathSource, Mode=OneWay}" Style="{StaticResource SourceTextStyle}" />
+                </StackPanel>
+                </Border>
+
+                <!-- ── End of Term Card ── -->
+                <Border Grid.Row="1" Grid.Column="1" Style="{StaticResource CardStyle}">
+                <StackPanel Spacing="8">
+                    <StackPanel Orientation="Horizontal" Spacing="10" Margin="0,0,0,4">
+                        <FontIcon Glyph="&#xE787;" FontSize="20"
+                                  Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" VerticalAlignment="Center" />
+                        <TextBlock Text="End of term" Style="{StaticResource SubtitleTextBlockStyle}" VerticalAlignment="Center" />
+                    </StackPanel>
+                    <TextBlock Text="Dates (month-day) on which rules that delete everything at end of term apply."
+                               Style="{StaticResource CaptionTextBlockStyle}" TextWrapping="WrapWholeWords"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    <ListView ItemsSource="{x:Bind ViewModel.EndOfTermDates}" Tag="EndOfTermDates"
+                              ItemTemplate="{StaticResource ListEntryTemplate}" SelectionMode="None" MaxHeight="200"
+                              IsEnabled="{x:Bind ViewModel.CanEditEndOfTermDates, Mode=OneWay}" />
+                    <Grid ColumnSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBox Text="{x:Bind ViewModel.NewTermDate, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                 PlaceholderText="4-30" KeyDown="AddTermDateBox_KeyDown"
+                                 AutomationProperties.Name="New end-of-term date"
+                                 IsEnabled="{x:Bind ViewModel.CanEditEndOfTermDates, Mode=OneWay}" />
+                        <Button Grid.Column="1" Content="Add" Click="AddTermDate_Click" AutomationProperties.Name="Add end-of-term date"
+                                IsEnabled="{x:Bind ViewModel.CanEditEndOfTermDates, Mode=OneWay}" />
+                    </Grid>
+                    <TextBlock Text="{x:Bind ViewModel.TermDateError, Mode=OneWay}"
+                               Style="{StaticResource CaptionTextBlockStyle}"
+                               Foreground="{ThemeResource SystemFillColorCriticalBrush}"
+                               Visibility="{x:Bind ViewModel.HasTermDateError, Mode=OneWay, Converter={StaticResource BoolToVisibility}}" />
+                    <TextBlock Text="{x:Bind ViewModel.EndOfTermDatesSource, Mode=OneWay}" Style="{StaticResource SourceTextStyle}" />
+                </StackPanel>
+                </Border>
+
+                <!-- ── Rules Card ── -->
+                <Border Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="2" Style="{StaticResource CardStyle}">
+                <StackPanel Spacing="8">
+                    <Grid>
+                        <StackPanel Orientation="Horizontal" Spacing="10" Margin="0,0,0,4">
+                            <FontIcon Glyph="&#xE8FD;" FontSize="20"
+                                      Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" VerticalAlignment="Center" />
+                            <TextBlock Text="Rules" Style="{StaticResource SubtitleTextBlockStyle}" VerticalAlignment="Center" />
+                        </StackPanel>
+                        <Button HorizontalAlignment="Right" Click="AddRule_Click"
+                                IsEnabled="{x:Bind ViewModel.CanEditPolicies, Mode=OneWay}">
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <FontIcon Glyph="&#xE710;" FontSize="12" />
+                                <TextBlock Text="Add rule" />
+                            </StackPanel>
+                        </Button>
+                    </Grid>
+                    <TextBlock Text="Checked in order against the device's inventory; the first rule that matches decides. Match fields are regular expressions, and an empty field matches anything."
+                               Style="{StaticResource CaptionTextBlockStyle}" TextWrapping="WrapWholeWords"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+
+                    <ItemsControl ItemsSource="{x:Bind ViewModel.Rules}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate x:DataType="vm:RuleItem">
+                                <Expander HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch" Margin="0,4">
+                                    <Expander.Header>
+                                        <StackPanel Padding="0,6">
+                                            <TextBlock Text="{x:Bind Name, Mode=OneWay}" Style="{StaticResource BodyStrongTextBlockStyle}" />
+                                            <TextBlock Text="{x:Bind Summary, Mode=OneWay}" Style="{StaticResource CaptionTextBlockStyle}"
+                                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="WrapWholeWords" />
+                                        </StackPanel>
+                                    </Expander.Header>
+                                    <Grid ColumnSpacing="12" RowSpacing="8" IsTapEnabled="True">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                        </Grid.RowDefinitions>
+                                        <TextBox Grid.Row="0" Grid.ColumnSpan="2" Header="Name" Text="{x:Bind Name, Mode=TwoWay}"
+                                                 IsEnabled="{x:Bind IsEditable}" />
+                                        <TextBox Grid.Row="1" Grid.Column="0" Header="Catalog" Text="{x:Bind Catalog, Mode=TwoWay}"
+                                                 PlaceholderText="^Kiosk$" IsEnabled="{x:Bind IsEditable}" />
+                                        <TextBox Grid.Row="1" Grid.Column="1" Header="Usage" Text="{x:Bind Usage, Mode=TwoWay}"
+                                                 PlaceholderText="^Shared$" IsEnabled="{x:Bind IsEditable}" />
+                                        <TextBox Grid.Row="2" Grid.Column="0" Header="Area" Text="{x:Bind Area, Mode=TwoWay}"
+                                                 IsEnabled="{x:Bind IsEditable}" />
+                                        <TextBox Grid.Row="2" Grid.Column="1" Header="Room" Text="{x:Bind Room, Mode=TwoWay}"
+                                                 IsEnabled="{x:Bind IsEditable}" />
+                                        <NumberBox Grid.Row="3" Grid.Column="0" Header="Delete after (days, -1 never)"
+                                                   Value="{x:Bind DurationDays, Mode=TwoWay}" Minimum="-1" Maximum="3650"
+                                                   SpinButtonPlacementMode="Compact" IsEnabled="{x:Bind IsEditable}" />
+                                        <ComboBox Grid.Row="3" Grid.Column="1" Header="Counting from" HorizontalAlignment="Stretch"
+                                                  SelectedIndex="{x:Bind StrategyIndex, Mode=TwoWay}" IsEnabled="{x:Bind IsEditable}">
+                                            <ComboBoxItem Content="Last login and account creation" />
+                                            <ComboBoxItem Content="Account creation only" />
+                                        </ComboBox>
+                                        <Grid Grid.Row="4" Grid.ColumnSpan="2">
+                                            <ToggleSwitch OnContent="Delete every account at end of term" OffContent="Delete every account at end of term"
+                                                          IsOn="{x:Bind ForceAtEndOfTerm, Mode=TwoWay}" IsEnabled="{x:Bind IsEditable}" />
+                                            <StackPanel Orientation="Horizontal" Spacing="4" HorizontalAlignment="Right" VerticalAlignment="Center">
+                                                <Button Tag="{x:Bind}" Click="MoveRuleUp_Click" Padding="6" IsEnabled="{x:Bind IsEditable}"
+                                                        ToolTipService.ToolTip="Move up">
+                                                    <FontIcon Glyph="&#xE70E;" FontSize="12" />
+                                                </Button>
+                                                <Button Tag="{x:Bind}" Click="MoveRuleDown_Click" Padding="6" IsEnabled="{x:Bind IsEditable}"
+                                                        ToolTipService.ToolTip="Move down">
+                                                    <FontIcon Glyph="&#xE70D;" FontSize="12" />
+                                                </Button>
+                                                <Button Tag="{x:Bind}" Click="RemoveRule_Click" Padding="6" IsEnabled="{x:Bind IsEditable}"
+                                                        ToolTipService.ToolTip="Remove rule">
+                                                    <FontIcon Glyph="&#xE74D;" FontSize="12" />
+                                                </Button>
+                                            </StackPanel>
+                                        </Grid>
+                                    </Grid>
+                                </Expander>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+
+                    <TextBlock Text="No rules: every device uses the policy for when no rule matches."
+                               Style="{StaticResource CaptionTextBlockStyle}"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                               Visibility="{x:Bind ViewModel.HasNoRules, Mode=OneWay, Converter={StaticResource BoolToVisibility}}" />
+                    <TextBlock Text="{x:Bind ViewModel.PoliciesSource, Mode=OneWay}" Style="{StaticResource SourceTextStyle}" />
+                </StackPanel>
+                </Border>
+            </Grid>
+
+        </StackPanel>
+    </ScrollViewer>
+    </Grid>
+</Page>

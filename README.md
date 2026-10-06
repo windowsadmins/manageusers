@@ -14,6 +14,14 @@ Designed for enterprise environments with 10,000+ devices managed by [Cimian](ht
 6. Clears each removed profile's recycle bin, and sweeps recycle bins whose SID no longer has a profile
 7. Runs as a signed SYSTEM scheduled task — no PowerShell, no script block logging noise
 
+## Managed Users Cleanup app
+
+`Managed Users Cleanup.exe` installs beside the CLI in `C:\Program Files\ManageUsers\`, with a Start menu entry. It has three tabs:
+
+- **Prefs** shows every setting with the value a run uses and where it comes from: policy, this device, Config.yaml or the default. It is read-only until **Unlock**, which relaunches the app as administrator; changes then save to `HKLM\SOFTWARE\ManageUsers\Settings`. A setting set by policy is locked. Rules, exclusions and end-of-term dates have their own editors.
+- **Run** offers **Simulate**, which streams the run's log and shows the decision list, and **Live cleanup**, which simulates, lists exactly the accounts and profiles it will delete for confirmation, and then runs live limited to that list. Each run asks for administrator approval unless the app is already elevated.
+- **Logs** shows the audit log and each day's log, coloured by level.
+
 ## Policy Configuration
 
 All deletion policies are defined in `C:\ProgramData\Management\ManageUsers\Config.yaml`. Rules are evaluated in order — first match wins. Area and room values are regex patterns matched against inventory.
@@ -162,7 +170,9 @@ DeferredDeletes: []
 .\build.ps1 -Nupkg
 ```
 
-Produces `release/x64/manageusers.exe`, `release/arm64/manageusers.exe`, and per-arch `.msi` packages in `build/`.
+Produces `release/<arch>/manageusers.exe`, the app in `release/<arch>/app/`, and per-arch `.msi` packages in `build/`. Building the app needs the Windows SDK (for `makepri.exe`); `-SkipApp` builds the CLI alone.
+
+A simulation also writes what it would remove to `C:\ProgramData\ManagedUsers\simulation.json`, which the app reads.
 
 Run the unit tests:
 
@@ -185,6 +195,9 @@ manageusers.exe --force
 # Use a custom inventory file
 manageusers.exe --inventory "D:\Config\inventory.yaml"
 
+# Remove nothing outside the named accounts or profile folders (repeat --only)
+manageusers.exe --only lab01 --only lab02
+
 # Version
 manageusers.exe --version
 ```
@@ -196,7 +209,7 @@ Installs to `C:\Program Files\ManageUsers\`. The scheduled task comes from the s
 - Daily at 3:00 AM + at startup
 - Action: `C:\Program Files\ManageUsers\manageusers.exe`
 
-Earlier releases installed into the shared `C:\Program Files\sbin\`. On upgrade, postinstall repoints any scheduled task that runs the old `manageusers.exe` and removes that one file; nothing else in `sbin` is touched.
+Earlier releases installed into the shared `C:\Program Files\sbin\`. On upgrade, postinstall repoints any scheduled task that runs the old `manageusers.exe` and removes ManageUsers' own files there (`manageusers.exe`, and the `Managed Users Cleanup` folder test builds used); nothing else in `sbin` is touched.
 
 ## Project Structure
 
@@ -207,30 +220,27 @@ ManageUsers/
 ├── build-info.yaml                   # cimipkg package metadata
 ├── scripts/                          # Install/uninstall scripts
 │   └── postinstall.ps1
-├── tests/ManageUsers.Tests/          # Settings, file-permission and log-link tests
+├── tests/ManageUsers.Tests/          # Settings, file-permission, log-link and app-logic tests
+├── src/ManageUsers.Core/             # Settings, paths and file trust shared by the CLI and the app
+├── src/ManageUsers.App/              # Managed Users Cleanup (WinUI 3)
 └── src/ManageUsers/
     ├── ManageUsers.csproj
     ├── app.manifest
     ├── Program.cs                    # CLI entry point + mutex guard
     ├── Models/
-    │   ├── AppConstants.cs           # Paths, registry keys and exclusion list
-    │   ├── ConfigFile.cs             # Config.yaml as written (nullable keys)
     │   ├── DeletionPolicy.cs         # Policy + strategy enums
     │   ├── InventoryData.cs          # Inventory.yaml model
-    │   ├── PolicyConfig.cs           # Config.yaml model
     │   ├── SessionsData.cs           # Sessions.yaml model
     │   └── UserSessionInfo.cs        # Per-user session data
     └── Services/
         ├── ConfigService.cs          # Settings resolution + YAML read/write
-        ├── FileTrust.cs              # Refuses files a non-admin could write
         ├── LogService.cs             # File + console logging with rotation
         ├── ManageUsersEngine.cs      # Main orchestrator
+        ├── PlanWriter.cs             # Simulation plan for the app
         ├── PolicyService.cs          # Config-driven policy evaluation
         ├── RecycleBinService.cs      # Per-SID recycle bin removal + orphan sweep
         ├── RepairService.cs          # Orphan repair + hidden user registry
         ├── SafeLogFile.cs            # Opens logs without writing through links
-        ├── SettingsResolver.cs       # CLI > policy > machine settings > Config.yaml > default
-        ├── SettingsSource.cs         # HKLM registry layers (64-bit view)
         ├── UserDeletionService.cs    # Core deletion + deferred processing
         └── UserEnumerationService.cs # Win32 user/profile enumeration
 ```

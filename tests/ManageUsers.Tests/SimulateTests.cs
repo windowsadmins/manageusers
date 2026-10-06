@@ -37,10 +37,11 @@ public sealed class SimulateTests : IDisposable
     {
         var service = Service(simulate: true);
 
-        service.RemoveOrphanedUsers(["orphan1", "orphan2"], new SessionsData());
+        service.RemoveOrphanedUsers([("orphan1", "no profile"), ("orphan2", "no profile")], new SessionsData());
 
         Assert.Empty(_commands);
         Assert.Empty(service.RemovedItems);
+        Assert.Equal(["orphan1", "orphan2"], service.Planned.Select(p => p.Name));
         _log.Dispose();
         var audit = File.ReadAllText(Path.Combine(_logs.FullName, "manageusers.audit.log"));
         Assert.Contains("ORPHAN_USER_REMOVE_SIMULATED | user=orphan1", audit);
@@ -63,7 +64,7 @@ public sealed class SimulateTests : IDisposable
     {
         var service = Service(simulate: false);
 
-        service.RemoveOrphanedUsers(["orphan1"], new SessionsData());
+        service.RemoveOrphanedUsers([("orphan1", "no profile")], new SessionsData());
 
         Assert.Equal(["net user \"orphan1\" /delete"], _commands);
         Assert.Equal(["orphan1"], service.RemovedItems);
