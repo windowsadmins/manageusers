@@ -9,10 +9,16 @@ namespace ManageUsers.Services;
 public sealed class RepairService
 {
     private readonly LogService _log;
+    private readonly bool _simulate;
 
-    public RepairService(LogService log)
+    /// <summary>Where hidden accounts are listed. Replaced in tests with a key under HKCU.</summary>
+    internal Microsoft.Win32.RegistryKey Hive { get; init; } = Microsoft.Win32.Registry.LocalMachine;
+    internal string UserListPath { get; init; } = @"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccounts\UserList";
+
+    public RepairService(LogService log, bool simulate = false)
     {
         _log = log;
+        _simulate = simulate;
     }
 
     /// <summary>
@@ -50,11 +56,19 @@ public sealed class RepairService
     /// </summary>
     public void UpdateHiddenUsers(HashSet<string> exclusions)
     {
-        const string regPath = @"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccounts\UserList";
+        var regPath = UserListPath;
+
+        // A simulation changes nothing: report what would be hidden and stop.
+        if (_simulate)
+        {
+            foreach (var user in exclusions.Where(u => !IsBuiltIn(u)))
+                _log.Info($"SIMULATE: would hide {user} from the sign-in screen");
+            return;
+        }
 
         try
         {
-            using var key = Microsoft.Win32.Registry.LocalMachine.CreateSubKey(regPath, writable: true);
+            using var key = Hive.CreateSubKey(regPath, writable: true);
             if (key == null)
             {
                 _log.Warning("Could not create SpecialAccounts\\UserList registry key");
@@ -63,12 +77,7 @@ public sealed class RepairService
 
             foreach (var user in exclusions)
             {
-                // Skip built-in accounts that Windows already hides
-                if (user.Equals("Administrator", StringComparison.OrdinalIgnoreCase)
-                    || user.Equals("DefaultAccount", StringComparison.OrdinalIgnoreCase)
-                    || user.Equals("Guest", StringComparison.OrdinalIgnoreCase)
-                    || user.Equals("WDAGUtilityAccount", StringComparison.OrdinalIgnoreCase)
-                    || user.Equals("defaultuser0", StringComparison.OrdinalIgnoreCase))
+                if (IsBuiltIn(user))
                     continue;
 
                 key.SetValue(user, 0, Microsoft.Win32.RegistryValueKind.DWord);
@@ -81,4 +90,12 @@ public sealed class RepairService
             _log.Warning($"Failed to update hidden users: {ex.Message}");
         }
     }
+
+    /// <summary>Built-in accounts Windows already hides.</summary>
+    private static bool IsBuiltIn(string user) =>
+        user.Equals("Administrator", StringComparison.OrdinalIgnoreCase)
+        || user.Equals("DefaultAccount", StringComparison.OrdinalIgnoreCase)
+        || user.Equals("Guest", StringComparison.OrdinalIgnoreCase)
+        || user.Equals("WDAGUtilityAccount", StringComparison.OrdinalIgnoreCase)
+        || user.Equals("defaultuser0", StringComparison.OrdinalIgnoreCase);
 }

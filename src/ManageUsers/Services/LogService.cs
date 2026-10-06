@@ -25,6 +25,21 @@ public sealed class LogService : IDisposable
     private readonly object _lock = new();
     private bool _disposed;
 
+    /// <summary>
+    /// A log writing only below <paramref name="directory"/>, with no retention or migration,
+    /// for tests.
+    /// </summary>
+    internal LogService(string directory)
+    {
+        Directory.CreateDirectory(directory);
+        _logFile = Path.Combine(directory, "manageusers.log");
+        _eventsFile = Path.Combine(directory, "events.jsonl");
+        _auditFile = Path.Combine(directory, "manageusers.audit.log");
+        _writer = new StreamWriter(_logFile, append: true) { AutoFlush = true };
+        _auditWriter = new StreamWriter(_auditFile, append: true) { AutoFlush = true };
+        _eventsWriter = new StreamWriter(_eventsFile, append: true) { AutoFlush = true };
+    }
+
     public LogService()
     {
         var now = DateTime.Now;

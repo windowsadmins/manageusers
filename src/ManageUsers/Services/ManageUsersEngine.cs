@@ -31,7 +31,7 @@ public sealed class ManageUsersEngine
         _policy = new PolicyService(_log, _policyConfig);
         _enum = new UserEnumerationService(_log);
         _delete = new UserDeletionService(_log, _config, simulate);
-        _repair = new RepairService(_log);
+        _repair = new RepairService(_log, simulate);
         _recycleBin = new RecycleBinService(_log, simulate);
         _perUserTasks = new PerUserTaskService(_log, simulate);
     }
