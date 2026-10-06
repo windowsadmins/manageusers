@@ -22,6 +22,9 @@ public sealed class UserDeletionService
     /// <summary>Accounts and profile folders actually removed this run, for the end-of-run audit summary.</summary>
     internal List<string> RemovedItems { get; } = new();
 
+    /// <summary>Runs a command and returns its output. Replaced in tests to see what would run.</summary>
+    internal Func<string, string, string> RunCommand { get; init; } = RunProcess;
+
     public UserDeletionService(LogService log, ConfigService config, bool simulate)
     {
         _log = log;
@@ -120,6 +123,13 @@ public sealed class UserDeletionService
     {
         foreach (var user in orphans)
         {
+            // This path once deleted the account even in a simulation.
+            if (_simulate)
+            {
+                _log.Audit("ORPHAN_USER_REMOVE_SIMULATED", $"user={user} reason=local account had no profile");
+                continue;
+            }
+
             _log.Info($"Removing orphaned user record: {user}");
             if (RemoveLocalUser(user))
             {
@@ -378,9 +388,16 @@ public sealed class UserDeletionService
 
     private bool RemoveLocalUser(string username)
     {
+        // Backstop: a simulation never deletes an account, whichever path asks.
+        if (_simulate)
+        {
+            _log.Warning($"SIMULATE: refused to delete local user {username}");
+            return false;
+        }
+
         try
         {
-            var result = RunProcess("net", $"user \"{username}\" /delete");
+            var result = RunCommand("net", $"user \"{username}\" /delete");
             if (result.Contains("successfully", StringComparison.OrdinalIgnoreCase))
             {
                 _log.Info($"Local user account deleted: {username}");
