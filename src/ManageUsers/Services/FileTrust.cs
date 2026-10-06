@@ -11,17 +11,26 @@ namespace ManageUsers.Services;
 /// could change is ignored rather than trusted.
 /// </summary>
 /// <remarks>
-/// A file is trusted when it, and every folder above it, is owned by SYSTEM,
-/// Administrators or TrustedInstaller, is not a link, and grants no other account a
-/// right that would let it change the file's contents: write or append to the file,
-/// delete or rename it, or rewrite its ACL or owner. On a folder, creating files is
-/// allowed, since anything a user creates there is owned by that user and fails the
-/// owner test; deleting entries in the folder is not. ACEs that only apply to children
-/// (inherit-only) do not describe the object itself and are skipped.
+/// Every folder above the file must be owned by SYSTEM, Administrators or
+/// TrustedInstaller, must not be a link, and must not let another account delete or
+/// rename its entries or rewrite its ACL or owner. Creating entries is allowed there,
+/// since what a user creates is owned by that user. The file itself must not be a link
+/// and must grant no other account the right to write, append, delete, or rewrite its
+/// ACL or owner.
 ///
-/// The installer gives C:\ProgramData\Management\ManageUsers an explicit ACL that
-/// passes this test; files created there before the lockdown keep their owner and are
-/// refused until an administrator replaces them.
+/// Then the owner. A file owned by SYSTEM, Administrators or TrustedInstaller is
+/// trusted. A file owned by an individual account is trusted only in a locked folder,
+/// one where no other account can create files either: there only an administrator can
+/// have made it. An administrator who edits a file elevated owns it under their own
+/// account, and that is the case this allows. <see cref="NormalizeOwner"/> then hands
+/// such a file to Administrators, so the individual account no longer holds the owner's
+/// implicit right to change its ACL.
+///
+/// The installer locks C:\ProgramData\Management\ManageUsers and the data folder. The
+/// first time it locks a folder it quarantines entries owned by an account it cannot
+/// show to be an administrator, so nothing a standard user left there before the
+/// lockdown is trusted afterwards. ACEs that only apply to children (inherit-only)
+/// do not describe the object itself and are skipped.
 /// </remarks>
 [SupportedOSPlatform("windows")]
 public sealed class FileTrust
@@ -45,12 +54,16 @@ public sealed class FileTrust
         FileSystemRights.DeleteSubdirectoriesAndFiles | FileSystemRights.Delete |
         FileSystemRights.ChangePermissions | FileSystemRights.TakeOwnership;
 
+    /// <summary>A locked folder also lets no other account create files or folders in it.</summary>
+    private const FileSystemRights LockedFolderRights =
+        FolderWriteRights | FileSystemRights.CreateFiles | FileSystemRights.CreateDirectories;
+
     /// <summary>The checker the tool uses: SYSTEM, Administrators and TrustedInstaller.</summary>
     public static FileTrust Default { get; } = new([SystemSid, AdministratorsSid, TrustedInstallerSid]);
 
     private readonly HashSet<SecurityIdentifier> _trusted;
 
-    /// <param name="trustedSids">Accounts allowed to own and write trusted files.</param>
+    /// <param name="trustedSids">Accounts allowed to own trusted files and folders anywhere.</param>
     public FileTrust(IEnumerable<SecurityIdentifier> trustedSids)
     {
         _trusted = new HashSet<SecurityIdentifier>(trustedSids) { OwnerRightsSid };
@@ -67,14 +80,6 @@ public sealed class FileTrust
         {
             var full = Path.GetFullPath(path);
             var file = new FileInfo(full);
-            if (file.Exists)
-            {
-                if (file.Attributes.HasFlag(FileAttributes.ReparsePoint))
-                    return $"{full} is a link";
-                var reason = Assess(file.GetAccessControl(), isDirectory: false);
-                if (reason != null) return $"{full}: {reason}";
-            }
-
             var start = Directory.Exists(full) ? new DirectoryInfo(full) : file.Directory;
             for (var dir = start; dir != null; dir = dir.Parent)
             {
@@ -83,6 +88,14 @@ public sealed class FileTrust
                     return $"{dir.FullName} is a link";
                 var reason = Assess(dir.GetAccessControl(), isDirectory: true);
                 if (reason != null) return $"{dir.FullName}: {reason}";
+            }
+
+            if (file.Exists)
+            {
+                if (file.Attributes.HasFlag(FileAttributes.ReparsePoint))
+                    return $"{full} is a link";
+                var reason = AssessFile(file.GetAccessControl(), file.Directory!.GetAccessControl());
+                if (reason != null) return $"{full}: {reason}";
             }
 
             return null;
@@ -94,16 +107,70 @@ public sealed class FileTrust
     }
 
     /// <summary>
-    /// Checks one security descriptor. Returns null when only trusted accounts own or can
-    /// write the object, or the reason another account can.
+    /// Checks one security descriptor on its own. Returns null when it is owned by a trusted
+    /// account and grants no other account a right to change it, or the reason it does not.
     /// </summary>
     public string? Assess(FileSystemSecurity security, bool isDirectory)
     {
-        var owner = security.GetOwner(typeof(SecurityIdentifier)) as SecurityIdentifier;
+        var owner = OwnerOf(security);
         if (owner == null || !_trusted.Contains(owner))
             return $"owned by {Describe(owner)}, not by SYSTEM, Administrators or TrustedInstaller";
+        return WhoCanModify(security, isDirectory ? FolderWriteRights : FileWriteRights);
+    }
 
-        var writeRights = isDirectory ? FolderWriteRights : FileWriteRights;
+    /// <summary>
+    /// Checks a file against its folder. Returns null when no other account can change the
+    /// file and either a trusted account owns it or the folder is locked.
+    /// </summary>
+    public string? AssessFile(FileSecurity file, DirectorySecurity folder)
+    {
+        var writer = WhoCanModify(file, FileWriteRights);
+        if (writer != null) return writer;
+
+        var owner = OwnerOf(file);
+        if (owner != null && _trusted.Contains(owner)) return null;
+        if (IsLocked(folder)) return null;
+        return $"owned by {Describe(owner)}, in a folder where non-administrators can create files";
+    }
+
+    /// <summary>
+    /// True when the folder is owned by a trusted account and no other account can create,
+    /// delete or rename entries in it, or rewrite its ACL or owner.
+    /// </summary>
+    public bool IsLocked(DirectorySecurity folder)
+    {
+        var owner = OwnerOf(folder);
+        return owner != null && _trusted.Contains(owner) && WhoCanModify(folder, LockedFolderRights) == null;
+    }
+
+    /// <summary>
+    /// Hands a trusted file owned by an individual account to Administrators, so that
+    /// account no longer holds the owner's implicit right to change its ACL. Returns a
+    /// line for the log when it changed the owner, otherwise null. Needs an elevated or
+    /// SYSTEM process; anything else leaves the file as it is.
+    /// </summary>
+    public string? NormalizeOwner(string path)
+    {
+        try
+        {
+            var file = new FileInfo(Path.GetFullPath(path));
+            if (!file.Exists || file.Attributes.HasFlag(FileAttributes.ReparsePoint)) return null;
+            var owner = OwnerOf(file.GetAccessControl(AccessControlSections.Owner));
+            if (owner == null || _trusted.Contains(owner) || WhyUntrusted(path) != null) return null;
+
+            var security = new FileSecurity();
+            security.SetOwner(AdministratorsSid);
+            file.SetAccessControl(security);
+            return $"Gave ownership of {file.FullName} to Administrators (was {Describe(owner)})";
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private string? WhoCanModify(FileSystemSecurity security, FileSystemRights writeRights)
+    {
         foreach (FileSystemAccessRule rule in security.GetAccessRules(true, true, typeof(SecurityIdentifier)))
         {
             if (rule.AccessControlType != AccessControlType.Allow) continue;
@@ -114,9 +181,11 @@ public sealed class FileTrust
             if ((mask & (GenericAll | GenericWrite)) != 0 || (rule.FileSystemRights & writeRights) != 0)
                 return $"{Describe(sid)} can modify it ({rule.FileSystemRights})";
         }
-
         return null;
     }
+
+    private static SecurityIdentifier? OwnerOf(FileSystemSecurity security) =>
+        security.GetOwner(typeof(SecurityIdentifier)) as SecurityIdentifier;
 
     private static string Describe(SecurityIdentifier? sid)
     {

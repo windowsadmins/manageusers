@@ -103,11 +103,18 @@ Set-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\ManageUsers' -Name Policies -Val
 
 ### File permissions
 
-manageusers runs as SYSTEM, so it reads `Config.yaml`, `Sessions.yaml` and the inventory file only when no non-administrator could have written them. A file is refused, and the run logs why, when it or any folder above it is owned by an account other than SYSTEM, Administrators or TrustedInstaller, is a link, or grants another account the right to write, delete or re-permission it. The run then carries on as if the file were absent.
+manageusers runs as SYSTEM, so it reads `Config.yaml`, `Sessions.yaml` and the inventory file only when no non-administrator could have written them. A file is refused, and the run logs why, when:
 
-The installer gives `C:\ProgramData\Management\ManageUsers` an explicit ACL: Administrators and SYSTEM full control, Users read, not inherited from ProgramData. A file in that folder that a non-administrator created before the lockdown keeps its owner and stays refused until an administrator replaces it.
+- it or any folder above it is a link;
+- any folder above it is owned by an account other than SYSTEM, Administrators or TrustedInstaller, or lets another account delete or rename its entries or change its ACL or owner;
+- the file grants another account the right to write, delete or re-permission it;
+- or the file is owned by an individual account in a folder where non-administrators can create files.
 
-The logs live under `C:\ProgramData\ManagedUsers`, which the installer locks the same way, removing any link it finds inside. At run time manageusers deletes a link found where a log folder or log file belongs, and replaces a log file that is a hard link, so it never writes through one.
+A file an administrator saved under their own account is trusted in a locked folder, where only administrators can create files, and the run hands it to Administrators before reading it. A refused file is treated as absent.
+
+The installer gives `C:\ProgramData\Management\ManageUsers` an explicit ACL: Administrators and SYSTEM full control, Users read, not inherited from ProgramData. The first time it locks the folder, any entry whose owner it cannot show to be an administrator moves to a `Quarantine-<timestamp>` folder inside it, for an administrator to review.
+
+The logs live under `C:\ProgramData\ManagedUsers`, which the installer locks and quarantines the same way, removing any link it finds inside. At run time manageusers deletes a link found where a log folder or log file belongs, and replaces a log file that is a hard link, so it never writes through one.
 
 ## Configuration
 
@@ -184,10 +191,12 @@ manageusers.exe --version
 
 ## Scheduling
 
-Deployed via Cimian as a `.msi` package. The postinstall script registers a scheduled task:
+Installs to `C:\Program Files\ManageUsers\`. The scheduled task comes from the separate ManageUsersPrefs package, so the schedule can change without rebuilding the binary:
 - Runs as SYSTEM
 - Daily at 3:00 AM + at startup
-- Action: `C:\Program Files\sbin\manageusers.exe`
+- Action: `C:\Program Files\ManageUsers\manageusers.exe`
+
+Earlier releases installed into the shared `C:\Program Files\sbin\`. On upgrade, postinstall repoints any scheduled task that runs the old `manageusers.exe` and removes that one file; nothing else in `sbin` is touched.
 
 ## Project Structure
 

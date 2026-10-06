@@ -1,14 +1,24 @@
-# ManageUsers postinstall — verify binary, seed working directories, lock down settings.
+# ManageUsers postinstall — verify binary, move off the old shared install folder,
+# seed working directories, lock down settings.
 # Scheduled task is registered by the ManageUsersPrefs package so the
 # schedule is a preference and can be updated without rebuilding the binary.
 # cimipkg auto-injects: $installLocation, $payloadRoot, $payloadDir
 $ErrorActionPreference = 'Stop'
 
-if (-not $installLocation) { $installLocation = 'C:\Program Files\sbin' }
+if (-not $installLocation) { $installLocation = 'C:\Program Files\ManageUsers' }
 
 $binaryPath = Join-Path $installLocation 'manageusers.exe'
 $configDir = 'C:\ProgramData\Management\ManageUsers'
 $logDir = 'C:\ProgramData\ManagedUsers\logs'
+
+# Earlier releases installed into the folder shared by several tools.
+$legacyDir = 'C:\Program Files\sbin'
+$legacyBinary = Join-Path $legacyDir 'manageusers.exe'
+
+$systemSid = 'S-1-5-18'
+$adminsSid = 'S-1-5-32-544'
+$trustedOwners = @($systemSid, $adminsSid, 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
+$lockedDacl = 'D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)'
 
 Write-Host ''
 Write-Host '[ManageUsers] Installing ManageUsers package' -ForegroundColor Green
@@ -20,24 +30,78 @@ if (-not (Test-Path $binaryPath)) {
 }
 Write-Host "[ManageUsers] Binary found: $binaryPath" -ForegroundColor Cyan
 
+# ── Move off the shared folder ───────────────────────────────
+
+# Point any scheduled task that still runs the old copy at the new one, keeping its
+# arguments, working directory, triggers and principal. Only tasks whose action is
+# exactly the old manageusers.exe are touched.
+foreach ($task in Get-ScheduledTask -ErrorAction SilentlyContinue) {
+    $changed = $false
+    $actions = foreach ($action in $task.Actions) {
+        $execute = if ($action.CimClass.CimClassName -eq 'MSFT_TaskExecAction') {
+            [Environment]::ExpandEnvironmentVariables(($action.Execute -as [string]).Trim().Trim('"'))
+        }
+        if ($execute -and ($execute -ieq $legacyBinary)) {
+            $changed = $true
+            $splat = @{ Execute = $binaryPath }
+            if ($action.Arguments) { $splat.Argument = $action.Arguments }
+            if ($action.WorkingDirectory) { $splat.WorkingDirectory = $action.WorkingDirectory }
+            New-ScheduledTaskAction @splat
+        } else {
+            $action
+        }
+    }
+    if ($changed) {
+        try {
+            Set-ScheduledTask -TaskName $task.TaskName -TaskPath $task.TaskPath -Action $actions | Out-Null
+            Write-Host "[ManageUsers] Scheduled task $($task.TaskPath)$($task.TaskName) now runs $binaryPath" -ForegroundColor Gray
+        } catch {
+            Write-Host "[ManageUsers] WARNING: could not repoint task $($task.TaskName): $($_.Exception.Message)" -ForegroundColor Yellow
+        }
+    }
+}
+
+# Remove the old copy: ours only, never anything else in the shared folder.
+if (($installLocation.TrimEnd('\') -ine $legacyDir) -and (Test-Path -LiteralPath $legacyBinary)) {
+    try {
+        Remove-Item -LiteralPath $legacyBinary -Force
+        Write-Host "[ManageUsers] Removed the old copy at $legacyBinary" -ForegroundColor Gray
+    } catch {
+        Write-Host "[ManageUsers] WARNING: could not remove $legacyBinary : $($_.Exception.Message)" -ForegroundColor Yellow
+    }
+}
+
+# ── Lock down the settings and data folders ──────────────────
+
 # The owner this process may assign: SYSTEM when it runs as SYSTEM; an elevated
 # administrator may only assign the Administrators group.
-$isSystem = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value -eq 'S-1-5-18'
-$ownerSid = if ($isSystem) { 'S-1-5-18' } else { 'S-1-5-32-544' }
+$isSystem = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value -eq $systemSid
+$ownerSid = if ($isSystem) { $systemSid } else { $adminsSid }
 
-# manageusers runs as SYSTEM: it acts on Config.yaml and Sessions.yaml, and writes its
-# logs, so only administrators may change either folder. ProgramData lets any user create
-# files below it, and a folder created there inherits that: replace it with SYSTEM and
-# Administrators full control, Users read, inherited by everything below and not
-# inherited from ProgramData. The owner changes too, since whoever owns a folder can
-# rewrite its ACL. Existing files drop explicit entries and take the folder's ACL; their
-# owner is left alone, as manageusers refuses a settings file a non-administrator owns.
-# Walks below a locked folder without following links: a link is deleted, and every
-# other entry has its explicit ACL entries dropped before anything inside it is visited,
-# so nothing can be planted behind the walk. icacls /T is not used because it would
-# follow a junction out of the folder.
-function Reset-Below([string]$Path) {
+# Local Administrators members, by SID. An account that is a member only through a
+# domain or Entra group cannot be resolved here and counts as unknown.
+$localAdmins = @()
+try {
+    $localAdmins = @(Get-LocalGroupMember -SID $adminsSid -ErrorAction Stop | ForEach-Object { $_.SID.Value })
+} catch {
+    Write-Host "[ManageUsers] WARNING: could not list local Administrators: $($_.Exception.Message)" -ForegroundColor Yellow
+}
+
+function Get-OwnerSid([string]$Path) {
+    try { (Get-Acl -LiteralPath $Path).GetOwner([System.Security.Principal.SecurityIdentifier]).Value } catch { $null }
+}
+
+# Walks below a locked folder without following links. A link is deleted. Every other
+# entry has its explicit ACL entries dropped before anything inside it is visited, so
+# nothing can be planted behind the walk; icacls /T is not used because it would follow
+# a junction out of the folder. Then its owner: an entry owned by an individual account
+# is handed to Administrators, so that account loses the owner's implicit right to
+# change its ACL. On a folder's first lockdown, an entry whose owner is not known to be
+# an administrator is quarantined instead: before the lockdown any user could have
+# created it, and manageusers trusts what is in a locked folder.
+function Reset-Below([string]$Path, [bool]$FirstLockdown, [string]$Quarantine) {
     foreach ($entry in [System.IO.Directory]::GetFileSystemEntries($Path)) {
+        if ($Quarantine -and ($entry -ieq $Quarantine)) { continue }
         $attributes = [System.IO.File]::GetAttributes($entry)
         if ($attributes -band [System.IO.FileAttributes]::ReparsePoint) {
             if ($attributes -band [System.IO.FileAttributes]::Directory) { [System.IO.Directory]::Delete($entry) }
@@ -45,29 +109,56 @@ function Reset-Below([string]$Path) {
             Write-Host "[ManageUsers] Removed link at $entry" -ForegroundColor Yellow
             continue
         }
+
+        $owner = Get-OwnerSid $entry
+        $knownAdmin = ($trustedOwners -contains $owner) -or ($localAdmins -contains $owner)
+        if ($FirstLockdown -and -not $knownAdmin) {
+            if (-not (Test-Path -LiteralPath $Quarantine)) { New-Item -ItemType Directory -Path $Quarantine -Force | Out-Null }
+            $name = [System.IO.Path]::GetFileName($entry)
+            $target = Join-Path $Quarantine $name
+            for ($n = 2; Test-Path -LiteralPath $target; $n++) { $target = Join-Path $Quarantine "$name.$n" }
+            Move-Item -LiteralPath $entry -Destination $target -Force
+            & icacls.exe $target /reset /C /Q | Out-Null
+            & icacls.exe $target /setowner "*$adminsSid" /C /Q | Out-Null
+            Write-Host "[ManageUsers] Quarantined $entry (owner ${owner}, not known to be an administrator) to $target" -ForegroundColor Yellow
+            continue
+        }
+
         & icacls.exe $entry /reset /C /Q | Out-Null
-        if ($attributes -band [System.IO.FileAttributes]::Directory) { Reset-Below $entry }
+        if ($trustedOwners -notcontains $owner) {
+            & icacls.exe $entry /setowner "*$adminsSid" /C /Q | Out-Null
+            Write-Host "[ManageUsers] Gave ownership of $entry to Administrators (was $owner)" -ForegroundColor Gray
+        }
+        if ($attributes -band [System.IO.FileAttributes]::Directory) { Reset-Below $entry $FirstLockdown $Quarantine }
     }
 }
 
+# Replaces a folder's ACL with SYSTEM and Administrators full control, Users read,
+# inherited by everything below and not inherited from ProgramData, where any user can
+# create files. The owner changes too, since whoever owns a folder can rewrite its ACL.
 function Lock-Folder([string]$Path) {
     # A link in place of the folder would send every read and write elsewhere.
     $existing = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
     if ($existing -and ($existing.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
         [System.IO.Directory]::Delete($Path)
         Write-Host "[ManageUsers] Removed link at $Path" -ForegroundColor Yellow
+        $existing = $null
     }
-    if (-not (Test-Path -LiteralPath $Path)) {
+    if (-not $existing) {
         New-Item -ItemType Directory -Path $Path -Force | Out-Null
         Write-Host "[ManageUsers] Created directory: $Path" -ForegroundColor Gray
     }
 
+    $current = (Get-Acl -LiteralPath $Path).GetSecurityDescriptorSddlForm('Access')
+    $firstLockdown = $current -ne $lockedDacl
+    $quarantine = Join-Path $Path ("Quarantine-" + (Get-Date -Format 'yyyyMMdd-HHmmss'))
+
     $acl = New-Object System.Security.AccessControl.DirectorySecurity
-    $acl.SetSecurityDescriptorSddlForm('D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)')
+    $acl.SetSecurityDescriptorSddlForm($lockedDacl)
     $acl.SetOwner((New-Object System.Security.Principal.SecurityIdentifier($ownerSid)))
     Set-Acl -LiteralPath $Path -AclObject $acl
-    Reset-Below $Path
-    Write-Host "[ManageUsers] Locked down $Path (Administrators and SYSTEM full control, Users read)" -ForegroundColor Gray
+    Reset-Below $Path $firstLockdown $quarantine
+    Write-Host "[ManageUsers] Locked down $Path (Administrators and SYSTEM full control, Users read$(if ($firstLockdown) { ', first lockdown' }))" -ForegroundColor Gray
 }
 
 # manageusers also checks the folders above its settings folder. Whoever owns
@@ -80,7 +171,6 @@ $managementRoot = Split-Path $configDir -Parent
 if (-not (Test-Path -LiteralPath $managementRoot)) {
     New-Item -ItemType Directory -Path $managementRoot -Force | Out-Null
 }
-$trustedOwners = @('S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
 $rootAcl = Get-Acl -LiteralPath $managementRoot
 $rootOwner = $rootAcl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
 if ($trustedOwners -notcontains $rootOwner) {

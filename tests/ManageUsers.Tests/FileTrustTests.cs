@@ -82,6 +82,54 @@ public class FileTrustTests
         Assert.Null(FileTrust.Default.Assess(FileAcl("O:SYD:PAI(D;;FA;;;BU)(A;;FA;;;SY)(A;;FR;;;BU)"), isDirectory: false));
     }
 
+    private const string Individual = "O:S-1-5-21-1111111111-2222222222-3333333333-1001";
+
+    [Fact]
+    public void AdministratorsOwnFileInALockedFolderIsTrusted()
+    {
+        // An administrator who saves Config.yaml elevated owns it under their own account.
+        Assert.Null(FileTrust.Default.AssessFile(FileAcl(Individual + Locked), FolderAcl("O:SY" + Locked)));
+    }
+
+    [Fact]
+    public void IndividualOwnerIsNotTrustedWhereUsersCanCreateFiles()
+    {
+        var reason = FileTrust.Default.AssessFile(FileAcl(Individual + Locked), FolderAcl("O:SY" + Locked + "(A;CI;0x116;;;BU)"));
+        Assert.NotNull(reason);
+        Assert.Contains("can create files", reason);
+    }
+
+    [Fact]
+    public void TrustedOwnerIsTrustedEvenWhereUsersCanCreateFiles()
+    {
+        // Inventory.yaml lives in a shared folder that is not locked.
+        Assert.Null(FileTrust.Default.AssessFile(FileAcl("O:SY" + Locked), FolderAcl("O:SY" + Locked + "(A;CI;0x116;;;BU)")));
+    }
+
+    [Theory]
+    [InlineData("(A;;FW;;;BU)")]
+    [InlineData("(A;;WD;;;S-1-5-21-1111111111-2222222222-3333333333-1002)")]
+    [InlineData("(A;;SD;;;AU)")]
+    public void LockedFolderDoesNotExcuseAFileOthersCanChange(string ace)
+    {
+        var reason = FileTrust.Default.AssessFile(FileAcl(Individual + Locked + ace), FolderAcl("O:SY" + Locked));
+        Assert.NotNull(reason);
+        Assert.Contains("can modify it", reason);
+    }
+
+    [Theory]
+    [InlineData("O:SY" + Locked, true)]
+    [InlineData("O:BA" + Locked, true)]
+    [InlineData("O:BU" + Locked, false)]
+    [InlineData("O:SY" + Locked + "(A;CI;0x116;;;BU)", false)]
+    [InlineData("O:SY" + Locked + "(A;;0x2;;;BU)", false)]
+    [InlineData("O:SY" + Locked + "(A;;0x4;;;BU)", false)]
+    [InlineData("O:SY" + Locked + "(A;OICIIO;FA;;;CO)", true)]
+    public void LockedMeansOnlyAdministratorsCanCreateOrChangeEntries(string sddl, bool locked)
+    {
+        Assert.Equal(locked, FileTrust.Default.IsLocked(FolderAcl(sddl)));
+    }
+
     [Fact]
     public void ChecksTheFileAndEveryFolderAboveIt()
     {

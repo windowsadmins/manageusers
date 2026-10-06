@@ -11,7 +11,7 @@ public static class AppConstants
 
     public static readonly string InstallDir = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
-        "sbin");
+        "ManageUsers");
 
     /// <summary>Policy (Group Policy, Intune), read before every other settings source.</summary>
     public const string PolicyRegistryPath = @"SOFTWARE\Policies\ManageUsers";

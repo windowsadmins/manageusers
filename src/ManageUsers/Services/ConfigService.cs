@@ -88,6 +88,11 @@ public sealed class ConfigService
     /// </summary>
     private bool IsTrusted(string path, string what)
     {
+        // A run is SYSTEM (or elevated), so it can hand an administrator's own file to
+        // Administrators before reading it; see FileTrust.
+        if (_trust.NormalizeOwner(path) is { } note)
+            _log.Info(note);
+
         var reason = _trust.WhyUntrusted(path);
         if (reason == null) return true;
         _log.Warning($"Ignoring {what} because a non-administrator could have written it: {reason}. " +
