@@ -7,7 +7,7 @@ Designed for enterprise environments with 10,000+ devices managed by [Cimian](ht
 ## How It Works
 
 1. Reads device inventory from `C:\ProgramData\Management\Inventory.yaml` (or a custom path via `--inventory`)
-2. Loads policy rules from `C:\ProgramData\Management\ManageUsers\Config.yaml` — first matching rule wins
+2. Resolves its settings from policy, machine settings and `C:\ProgramData\Management\ManageUsers\Config.yaml` (see [Settings](#settings)) — first matching rule wins
 3. Enumerates local users, gathers creation dates and last login times
 4. Deletes users that exceed the inactivity threshold
 5. Cleans up orphaned accounts and profiles
@@ -68,6 +68,45 @@ end_of_term_dates:
 
 **Match logic:** When both `area` and `room` are specified, either can match (OR). When only one is specified, it must match.
 
+## Settings
+
+Each setting is resolved on its own, highest precedence first:
+
+1. A command-line flag for this run (`--inventory`)
+2. Policy: `HKLM\SOFTWARE\Policies\ManageUsers`
+3. Machine settings: `HKLM\SOFTWARE\ManageUsers\Settings`
+4. `C:\ProgramData\Management\ManageUsers\Config.yaml`
+5. The built-in default
+
+Both registry keys are read in the 64-bit view. Every setting can be set by policy. Each run logs the source of every setting that did not come from its default, and a value it cannot use is logged and skipped so the next layer applies.
+
+| Registry value | Type | Config.yaml key |
+|---|---|---|
+| `Exclusions` | REG_MULTI_SZ, or REG_SZ separated by `;` `,` or newlines | `exclusions` |
+| `DeleteAdmins` | REG_DWORD 0/1, or REG_SZ `true`/`false` | `delete_admins` |
+| `DeletableAdmins` | REG_MULTI_SZ, or separated REG_SZ | `deletable_admins` |
+| `Policies` | REG_SZ or REG_MULTI_SZ holding the YAML or JSON rule list | `policies` |
+| `DefaultPolicyDurationDays` | REG_DWORD | `default_policy.duration_days` |
+| `DefaultPolicyStrategy` | REG_SZ | `default_policy.strategy` |
+| `DefaultPolicyForceAtEndOfTerm` | REG_DWORD 0/1, or REG_SZ `true`/`false` | `default_policy.force_at_end_of_term` |
+| `EndOfTermDates` | REG_MULTI_SZ, or separated REG_SZ, of month-day pairs such as `4-30` | `end_of_term_dates` |
+| `InventoryPath` | REG_SZ | `inventory_path` |
+
+A list value that is present but empty clears the list for lower layers. The built-in end-of-term dates (April 30, August 31, December 31) apply only when no layer supplies policy rules.
+
+For example, this sets the policy rules as JSON:
+
+```pwsh
+New-Item -Path 'HKLM:\SOFTWARE\Policies\ManageUsers' -Force | Out-Null
+Set-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\ManageUsers' -Name Policies -Value '[{"name":"Kiosks","match":{"catalog":"^Kiosk$"},"duration_days":1,"strategy":"creation_only"}]'
+```
+
+### File permissions
+
+manageusers runs as SYSTEM, so it reads `Config.yaml`, `Sessions.yaml` and the inventory file only when no non-administrator could have written them. A file is refused, and the run logs why, when it or any folder above it is owned by an account other than SYSTEM, Administrators or TrustedInstaller, is a link, or grants another account the right to write, delete or re-permission it. The run then carries on as if the file were absent.
+
+The installer gives `C:\ProgramData\Management\ManageUsers` an explicit ACL: Administrators and SYSTEM full control, Users read, not inherited from ProgramData. A file in that folder that a non-administrator created before the lockdown keeps its owner and stays refused until an administrator replaces it.
+
 ## Configuration
 
 ### Inventory (read-only)
@@ -78,14 +117,14 @@ location: "A200"
 usage: "Shared"
 ```
 
-You can override this path at runtime with `--inventory <path>`.
+The path can be changed with the `InventoryPath` setting, or for one run with `--inventory <path>`.
 
 ### Exclusions
 
 Exclusions are merged from three sources (all case-insensitive):
 
 1. **Built-in** — Administrator, DefaultAccount, Guest, WDAGUtilityAccount, defaultuser0 (hardcoded in `AppConstants.cs`)
-2. **Config.yaml `exclusions:`** — fleet-wide service accounts deployed via Cimian (e.g. `svc-admin`, `svc-helpdesk`)
+2. **The `Exclusions` setting** (policy, machine settings or Config.yaml `exclusions:`) — fleet-wide service accounts (e.g. `svc-admin`, `svc-helpdesk`)
 3. **Sessions.yaml `Exclusions:`** — machine-specific overrides, editable locally
 
 The currently logged-in console user is also excluded automatically.
@@ -115,6 +154,12 @@ DeferredDeletes: []
 ```
 
 Produces `release/x64/manageusers.exe`, `release/arm64/manageusers.exe`, and per-arch `.msi` packages in `build/`.
+
+Run the unit tests:
+
+```pwsh
+dotnet test tests/ManageUsers.Tests
+```
 
 ## Usage
 
@@ -151,24 +196,29 @@ ManageUsers/
 ├── build-info.yaml                   # cimipkg package metadata
 ├── scripts/                          # Install/uninstall scripts
 │   └── postinstall.ps1
+├── tests/ManageUsers.Tests/          # Settings precedence and file-permission tests
 └── src/ManageUsers/
     ├── ManageUsers.csproj
     ├── app.manifest
     ├── Program.cs                    # CLI entry point + mutex guard
     ├── Models/
-    │   ├── AppConstants.cs           # Paths and exclusion list
+    │   ├── AppConstants.cs           # Paths, registry keys and exclusion list
+    │   ├── ConfigFile.cs             # Config.yaml as written (nullable keys)
     │   ├── DeletionPolicy.cs         # Policy + strategy enums
     │   ├── InventoryData.cs          # Inventory.yaml model
     │   ├── PolicyConfig.cs           # Config.yaml model
     │   ├── SessionsData.cs           # Sessions.yaml model
     │   └── UserSessionInfo.cs        # Per-user session data
     └── Services/
-        ├── ConfigService.cs          # YAML read/write + config loading
+        ├── ConfigService.cs          # Settings resolution + YAML read/write
+        ├── FileTrust.cs              # Refuses files a non-admin could write
         ├── LogService.cs             # File + console logging with rotation
         ├── ManageUsersEngine.cs      # Main orchestrator
         ├── PolicyService.cs          # Config-driven policy evaluation
         ├── RecycleBinService.cs      # Per-SID recycle bin removal + orphan sweep
         ├── RepairService.cs          # Orphan repair + hidden user registry
+        ├── SettingsResolver.cs       # CLI > policy > machine settings > Config.yaml > default
+        ├── SettingsSource.cs         # HKLM registry layers (64-bit view)
         ├── UserDeletionService.cs    # Core deletion + deferred processing
         └── UserEnumerationService.cs # Win32 user/profile enumeration
 ```
