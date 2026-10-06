@@ -20,31 +20,67 @@ if (-not (Test-Path $binaryPath)) {
 }
 Write-Host "[ManageUsers] Binary found: $binaryPath" -ForegroundColor Cyan
 
-# A link in place of the settings folder would send every read and write elsewhere.
-$existing = Get-Item -LiteralPath $configDir -Force -ErrorAction SilentlyContinue
-if ($existing -and ($existing.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
-    [System.IO.Directory]::Delete($configDir)
-    Write-Host "[ManageUsers] Removed link at $configDir" -ForegroundColor Yellow
-}
-
-foreach ($dir in @($configDir, $logDir)) {
-    if (-not (Test-Path $dir)) {
-        New-Item -ItemType Directory -Path $dir -Force | Out-Null
-        Write-Host "[ManageUsers] Created directory: $dir" -ForegroundColor Gray
-    }
-}
-
 # The owner this process may assign: SYSTEM when it runs as SYSTEM; an elevated
 # administrator may only assign the Administrators group.
 $isSystem = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value -eq 'S-1-5-18'
 $ownerSid = if ($isSystem) { 'S-1-5-18' } else { 'S-1-5-32-544' }
 
-# manageusers also checks the folders above its own. Whoever owns ProgramData\Management
-# can rewrite its ACL, so an owner other than SYSTEM, Administrators or TrustedInstaller
-# (an interactive session that created it first) is replaced. Its entries are left alone;
-# the tool refuses anything below a folder a non-administrator can change.
-$trustedOwners = @('S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
+# manageusers runs as SYSTEM: it acts on Config.yaml and Sessions.yaml, and writes its
+# logs, so only administrators may change either folder. ProgramData lets any user create
+# files below it, and a folder created there inherits that: replace it with SYSTEM and
+# Administrators full control, Users read, inherited by everything below and not
+# inherited from ProgramData. The owner changes too, since whoever owns a folder can
+# rewrite its ACL. Existing files drop explicit entries and take the folder's ACL; their
+# owner is left alone, as manageusers refuses a settings file a non-administrator owns.
+# Walks below a locked folder without following links: a link is deleted, and every
+# other entry has its explicit ACL entries dropped before anything inside it is visited,
+# so nothing can be planted behind the walk. icacls /T is not used because it would
+# follow a junction out of the folder.
+function Reset-Below([string]$Path) {
+    foreach ($entry in [System.IO.Directory]::GetFileSystemEntries($Path)) {
+        $attributes = [System.IO.File]::GetAttributes($entry)
+        if ($attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+            if ($attributes -band [System.IO.FileAttributes]::Directory) { [System.IO.Directory]::Delete($entry) }
+            else { [System.IO.File]::Delete($entry) }
+            Write-Host "[ManageUsers] Removed link at $entry" -ForegroundColor Yellow
+            continue
+        }
+        & icacls.exe $entry /reset /C /Q | Out-Null
+        if ($attributes -band [System.IO.FileAttributes]::Directory) { Reset-Below $entry }
+    }
+}
+
+function Lock-Folder([string]$Path) {
+    # A link in place of the folder would send every read and write elsewhere.
+    $existing = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+    if ($existing -and ($existing.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+        [System.IO.Directory]::Delete($Path)
+        Write-Host "[ManageUsers] Removed link at $Path" -ForegroundColor Yellow
+    }
+    if (-not (Test-Path -LiteralPath $Path)) {
+        New-Item -ItemType Directory -Path $Path -Force | Out-Null
+        Write-Host "[ManageUsers] Created directory: $Path" -ForegroundColor Gray
+    }
+
+    $acl = New-Object System.Security.AccessControl.DirectorySecurity
+    $acl.SetSecurityDescriptorSddlForm('D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)')
+    $acl.SetOwner((New-Object System.Security.Principal.SecurityIdentifier($ownerSid)))
+    Set-Acl -LiteralPath $Path -AclObject $acl
+    Reset-Below $Path
+    Write-Host "[ManageUsers] Locked down $Path (Administrators and SYSTEM full control, Users read)" -ForegroundColor Gray
+}
+
+# manageusers also checks the folders above its settings folder. Whoever owns
+# ProgramData\Management can rewrite its ACL, so an owner other than SYSTEM,
+# Administrators or TrustedInstaller (an interactive session that created it first) is
+# replaced. Its entries are left alone; the tool refuses anything below a folder a
+# non-administrator can change. The folder is shared with other tools, so it is not
+# locked down here.
 $managementRoot = Split-Path $configDir -Parent
+if (-not (Test-Path -LiteralPath $managementRoot)) {
+    New-Item -ItemType Directory -Path $managementRoot -Force | Out-Null
+}
+$trustedOwners = @('S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
 $rootAcl = Get-Acl -LiteralPath $managementRoot
 $rootOwner = $rootAcl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
 if ($trustedOwners -notcontains $rootOwner) {
@@ -53,22 +89,12 @@ if ($trustedOwners -notcontains $rootOwner) {
     Write-Host "[ManageUsers] Changed owner of $managementRoot from $rootOwner" -ForegroundColor Yellow
 }
 
-# manageusers runs as SYSTEM and acts on Config.yaml and Sessions.yaml, so only
-# administrators may change them. ProgramData lets any user create files below it, and a
-# folder created there inherits that: replace it with SYSTEM and Administrators full
-# control, Users read, inherited by everything below and not inherited from ProgramData.
-# The owner becomes SYSTEM (Administrators when run from an elevated session), since
-# whoever owns the folder can rewrite its ACL.
-$lockedSddl = 'D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)'
-$acl = New-Object System.Security.AccessControl.DirectorySecurity
-$acl.SetSecurityDescriptorSddlForm($lockedSddl)
-$acl.SetOwner((New-Object System.Security.Principal.SecurityIdentifier($ownerSid)))
-Set-Acl -LiteralPath $configDir -AclObject $acl
-Write-Host "[ManageUsers] Locked down $configDir (Administrators and SYSTEM full control, Users read)" -ForegroundColor Gray
-
-# Existing files drop any explicit entries and take the folder's ACL. Their owner is left
-# alone: manageusers refuses a file a non-administrator owns, and logs why.
-& icacls.exe "$configDir\*" /reset /T /C /Q | Out-Null
+# The logs folder's parent is manageusers' own, so it is locked as a whole.
+Lock-Folder $configDir
+Lock-Folder (Split-Path $logDir -Parent)
+if (-not (Test-Path -LiteralPath $logDir)) {
+    New-Item -ItemType Directory -Path $logDir -Force | Out-Null
+}
 
 $sessionsFile = Join-Path $configDir 'Sessions.yaml'
 if (-not (Test-Path $sessionsFile)) {

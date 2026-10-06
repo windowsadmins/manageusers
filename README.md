@@ -107,6 +107,8 @@ manageusers runs as SYSTEM, so it reads `Config.yaml`, `Sessions.yaml` and the i
 
 The installer gives `C:\ProgramData\Management\ManageUsers` an explicit ACL: Administrators and SYSTEM full control, Users read, not inherited from ProgramData. A file in that folder that a non-administrator created before the lockdown keeps its owner and stays refused until an administrator replaces it.
 
+The logs live under `C:\ProgramData\ManagedUsers`, which the installer locks the same way, removing any link it finds inside. At run time manageusers deletes a link found where a log folder or log file belongs, and replaces a log file that is a hard link, so it never writes through one.
+
 ## Configuration
 
 ### Inventory (read-only)
@@ -196,7 +198,7 @@ ManageUsers/
 ├── build-info.yaml                   # cimipkg package metadata
 ├── scripts/                          # Install/uninstall scripts
 │   └── postinstall.ps1
-├── tests/ManageUsers.Tests/          # Settings precedence and file-permission tests
+├── tests/ManageUsers.Tests/          # Settings, file-permission and log-link tests
 └── src/ManageUsers/
     ├── ManageUsers.csproj
     ├── app.manifest
@@ -217,6 +219,7 @@ ManageUsers/
         ├── PolicyService.cs          # Config-driven policy evaluation
         ├── RecycleBinService.cs      # Per-SID recycle bin removal + orphan sweep
         ├── RepairService.cs          # Orphan repair + hidden user registry
+        ├── SafeLogFile.cs            # Opens logs without writing through links
         ├── SettingsResolver.cs       # CLI > policy > machine settings > Config.yaml > default
         ├── SettingsSource.cs         # HKLM registry layers (64-bit view)
         ├── UserDeletionService.cs    # Core deletion + deferred processing
