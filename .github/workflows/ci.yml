@@ -43,3 +43,6 @@ jobs:
 
       - name: Build
         run: dotnet build ManageUsers.sln --configuration Release --no-restore --verbosity minimal
+
+      - name: Test
+        run: dotnet test tests/ManageUsers.Tests/ManageUsers.Tests.csproj --configuration Release --no-restore --verbosity minimal
