@@ -13,7 +13,7 @@ namespace ManageUsers.App.ViewModels;
 /// </summary>
 public partial class LogsViewModel : ObservableObject
 {
-    private static readonly string LogDirectory = AppConstants.LogDir;
+    public static readonly string LogDirectory = AppConstants.LogDir;
 
     public ObservableCollection<LogFile> LogFiles { get; } = [];
 
