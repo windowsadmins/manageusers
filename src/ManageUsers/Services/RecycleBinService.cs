@@ -86,7 +86,7 @@ public sealed class RecycleBinService
         }
 
         if (removed > 0)
-            _log.Info($"Removed {removed} orphaned recycle bin(s)");
+            _log.Info(RunWording.Removed(_simulate, removed, "orphaned recycle bin(s)"));
 
         return removed;
     }

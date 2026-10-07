@@ -460,7 +460,7 @@ public sealed class UserDeletionService
         var homePath = profilePath ?? Path.Combine(@"C:\Users", username);
 
         // Preferred path: supported API removes folder + registry + per-SID state.
-        if (sid != null && !IsHiveLoaded(sid) && TryDeleteProfileViaApi(sid, username))
+        if (HasProfileToDelete(sid, profilePath) && !IsHiveLoaded(sid!) && TryDeleteProfileViaApi(sid!, username))
         {
             RemoveResidualProfileFolder(homePath);
             return;
@@ -485,7 +485,7 @@ public sealed class UserDeletionService
         {
             using var profileList = Registry.LocalMachine.OpenSubKey(
                 @"SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList", writable: true);
-            if (profileList != null && sid != null)
+            if (profileList != null && sid != null && profileList.GetSubKeyNames().Contains(sid, StringComparer.OrdinalIgnoreCase))
             {
                 profileList.DeleteSubKeyTree(sid, throwOnMissingSubKey: false);
                 _log.Info($"Profile registry entry deleted for {username}");
@@ -496,6 +496,14 @@ public sealed class UserDeletionService
             _log.Warning($"Failed to remove profile registry entry for {username}: {ex.Message}");
         }
     }
+
+    /// <summary>
+    /// Whether the account has a ProfileList entry to delete. <see cref="FindProfile"/>
+    /// returns no path when it has none; DeleteProfileW then fails with "file not found",
+    /// which logged a warning for every account that never signed in.
+    /// </summary>
+    internal static bool HasProfileToDelete(string? sid, string? profilePath) =>
+        sid != null && profilePath != null;
 
     /// <summary>
     /// Resolve the account's SID and its ProfileList entry while the account still

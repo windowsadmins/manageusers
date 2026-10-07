@@ -114,7 +114,7 @@ public sealed class PerUserTaskService
         removed += SweepStrandedCacheEntries();
 
         if (removed > 0)
-            _log.Info($"Removed {removed} orphaned per-user scheduled task(s)");
+            _log.Info(RunWording.Removed(_simulate, removed, "orphaned per-user scheduled task(s)"));
 
         return removed;
     }
