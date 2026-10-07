@@ -36,6 +36,10 @@ jobs:
         run: |
           $tag = "${{ github.ref_name }}"
           $version = $tag -replace '^v',''
+          # Cimian upgrades only to a higher version, so a release must not go below what
+          # the fleet already runs.
+          $floor = [version]'2026.9.14.1048'
+          if ([version]$version -lt $floor) { throw "Version $version is lower than the fleet's 2026.09.14.1048" }
           "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
       - name: Build binaries
@@ -53,6 +57,25 @@ jobs:
             $arch = if ($rid -eq "win-x64") { "x64" } else { "arm64" }
             New-Item -ItemType Directory -Path "dist/$arch" -Force | Out-Null
             Copy-Item "publish/$rid/manageusers.exe" "dist/$arch/manageusers.exe" -Force
+
+            # Managed Users Cleanup: the whole self-contained WinUI output, with the
+            # resources.pri it cannot start without, installed beside manageusers.exe.
+            dotnet publish src/ManageUsers.App/ManageUsers.App.csproj `
+              -c Release -r $rid --self-contained `
+              -o "publish/app-$rid" `
+              -p:Version=$version `
+              -p:AssemblyVersion=$version `
+              -p:FileVersion=$version
+            if ($LASTEXITCODE -ne 0) { throw "App publish failed for $rid" }
+            . ./eng/Publish-AppResources.ps1
+            $appOut = (Resolve-Path "publish/app-$rid").Path
+            if (-not (Publish-AppResources -Arch $arch -OutputDir $appOut -AppProjectDir (Resolve-Path src/ManageUsers.App).Path)) {
+              throw "resources.pri generation failed for $rid"
+            }
+            if (-not (Test-Path "$appOut/Managed Users Cleanup.exe") -or -not (Test-Path "$appOut/resources.pri")) {
+              throw "App output incomplete for $rid"
+            }
+            Copy-Item "$appOut/*" "dist/$arch/" -Recurse -Force
           }
 
       - name: Download cimipkg
@@ -84,7 +107,8 @@ jobs:
             $stagingDir = "staging-$arch"
             New-Item -ItemType Directory -Path "$stagingDir/payload" -Force | Out-Null
             New-Item -ItemType Directory -Path "$stagingDir/scripts" -Force | Out-Null
-            Copy-Item "dist/$arch/manageusers.exe" "$stagingDir/payload/" -Force
+            # The payload is the install folder, C:\Program Files\ManageUsers: CLI and app.
+            Copy-Item "dist/$arch/*" "$stagingDir/payload/" -Recurse -Force
 
             # Strip signing_certificate so cimipkg doesn't try to sign on the
             # runner — releases are published unsigned by design.
@@ -112,8 +136,17 @@ jobs:
       - name: Prepare release zips
         shell: pwsh
         run: |
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          # Each zip is the install folder's contents, C:\Program Files\ManageUsers:
+          # manageusers.exe and the Managed Users Cleanup app with its runtime files.
           foreach ($arch in @("x64", "arm64")) {
-            Compress-Archive -Path "dist/$arch/manageusers.exe" -DestinationPath "release/manageusers-$arch.zip" -Force
+            Compress-Archive -Path "dist/$arch/*" -DestinationPath "release/manageusers-$arch.zip" -Force
+            $zip = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path "release/manageusers-$arch.zip").Path)
+            try {
+              foreach ($required in 'manageusers.exe', 'Managed Users Cleanup.exe', 'resources.pri') {
+                if (-not ($zip.Entries | Where-Object FullName -eq $required)) { throw "manageusers-$arch.zip is missing $required" }
+              }
+            } finally { $zip.Dispose() }
           }
 
       - name: Create GitHub Release
