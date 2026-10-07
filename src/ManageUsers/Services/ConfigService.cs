@@ -6,12 +6,18 @@ using YamlDotNet.Serialization.NamingConventions;
 namespace ManageUsers.Services;
 
 /// <summary>
-/// Reads Inventory.yaml and Sessions.yaml, writes Sessions.yaml updates.
+/// Resolves the run's settings (policy, machine settings, Config.yaml, defaults), reads
+/// Inventory.yaml and Sessions.yaml, and writes Sessions.yaml updates. Each file is
+/// read only when no non-administrator could have written it; see <see cref="FileTrust"/>.
 /// </summary>
 public sealed class ConfigService
 {
     private readonly LogService _log;
-    private readonly string _inventoryPath;
+    private readonly string? _commandLineInventoryPath;
+    private readonly ISettingsSource _policy;
+    private readonly ISettingsSource _machine;
+    private readonly FileTrust _trust;
+    private string _inventoryPath = AppConstants.DefaultInventoryYamlPath;
     private static readonly IDeserializer Deserializer = new DeserializerBuilder()
         .WithNamingConvention(NullNamingConvention.Instance)
         .IgnoreUnmatchedProperties()
@@ -21,53 +27,78 @@ public sealed class ConfigService
         .Build();
 
     public ConfigService(LogService log, string? inventoryPath = null)
+        : this(log, inventoryPath, RegistrySettingsSource.Policy(), RegistrySettingsSource.MachineSettings(), FileTrust.Default)
+    {
+    }
+
+    public ConfigService(LogService log, string? inventoryPath, ISettingsSource policy, ISettingsSource machine, FileTrust trust)
     {
         _log = log;
-        _inventoryPath = inventoryPath ?? AppConstants.DefaultInventoryYamlPath;
+        _commandLineInventoryPath = inventoryPath;
+        _policy = policy;
+        _machine = machine;
+        _trust = trust;
     }
 
     public PolicyConfig LoadPolicyConfig()
     {
+        var resolved = SettingsResolver.Resolve(_policy, _machine, LoadConfigFile(), _commandLineInventoryPath);
+        foreach (var note in resolved.Notes)
+            _log.Warning(note);
+        foreach (var name in SettingsResolver.AllSettingNames)
+        {
+            if (resolved.Sources.TryGetValue(name, out var source) && source != SettingSource.Default)
+                _log.Info($"Setting {name} from {SettingsResolver.Describe(source)}");
+        }
+
+        var config = resolved.Config;
+        _inventoryPath = resolved.InventoryPath;
+        if (resolved.Sources[SettingsResolver.Policies] == SettingSource.Default)
+            _log.Warning("No policy rules are set — using the built-in default policy");
+        else
+            _log.Info($"Loaded {config.Policies.Count} policy rule(s) from {SettingsResolver.Describe(resolved.Sources[SettingsResolver.Policies])}");
+        return config;
+    }
+
+    private ConfigFile? LoadConfigFile()
+    {
         var path = AppConstants.ConfigYamlPath;
         if (!File.Exists(path))
         {
-            _log.Warning($"Config file not found: {path} — using built-in defaults");
-            return GetDefaultPolicyConfig();
+            _log.Info($"Config file not found: {path}");
+            return null;
         }
+        if (!IsTrusted(path, "Config.yaml"))
+            return null;
 
         try
         {
-            var yaml = File.ReadAllText(path);
-            var config = Deserializer.Deserialize<PolicyConfig>(yaml);
-            if (config?.Policies == null || config.Policies.Count == 0)
-            {
-                _log.Warning("Config.yaml has no policies defined — using built-in defaults");
-                var defaults = GetDefaultPolicyConfig();
-                defaults.Exclusions = config?.Exclusions ?? [];
-                defaults.DeleteAdmins = config?.DeleteAdmins ?? false;
-                defaults.DeletableAdmins = config?.DeletableAdmins ?? [];
-                return defaults;
-            }
-            _log.Info($"Loaded {config.Policies.Count} policy rule(s) from Config.yaml");
-            return config;
+            return Deserializer.Deserialize<ConfigFile>(File.ReadAllText(path));
         }
         catch (Exception ex)
         {
-            _log.Warning($"Failed to parse Config.yaml: {ex.Message} — using built-in defaults");
-            return GetDefaultPolicyConfig();
+            _log.Warning($"Failed to parse Config.yaml: {ex.Message} — ignoring it");
+            return null;
         }
     }
 
-    private static PolicyConfig GetDefaultPolicyConfig() => new()
+    /// <summary>
+    /// True when <paramref name="path"/> may be read. Otherwise logs which account could
+    /// have written it and returns false, so the caller carries on without it.
+    /// </summary>
+    private bool IsTrusted(string path, string what)
     {
-        DefaultPolicy = new DefaultPolicyRule { DurationDays = 28, Strategy = "login_and_creation" },
-        EndOfTermDates =
-        [
-            new TermDate { Month = 4, Day = 30 },
-            new TermDate { Month = 8, Day = 31 },
-            new TermDate { Month = 12, Day = 31 }
-        ]
-    };
+        // A run is SYSTEM (or elevated), so it can hand an administrator's own file to
+        // Administrators before reading it; see FileTrust.
+        if (_trust.NormalizeOwner(path) is { } note)
+            _log.Info(note);
+
+        var reason = _trust.WhyUntrusted(path);
+        if (reason == null) return true;
+        _log.Warning($"Ignoring {what} because a non-administrator could have written it: {reason}. " +
+                     "Replace it as an administrator, or reinstall ManageUsers to reset the folder's permissions.");
+        return false;
+    }
 
     public InventoryData LoadInventory()
     {
@@ -76,6 +107,8 @@ public sealed class ConfigService
             _log.Warning($"Inventory file not found: {_inventoryPath}");
             return new InventoryData();
         }
+        if (!IsTrusted(_inventoryPath, "the inventory file"))
+            return new InventoryData();
 
         var yaml = File.ReadAllText(_inventoryPath);
         return Deserializer.Deserialize<InventoryData>(yaml) ?? new InventoryData();
@@ -89,17 +122,42 @@ public sealed class ConfigService
             _log.Warning($"Sessions file not found: {path} — using defaults");
             return new SessionsData();
         }
+        if (!IsTrusted(path, "Sessions.yaml"))
+            return new SessionsData();
 
         var yaml = File.ReadAllText(path);
         return Deserializer.Deserialize<SessionsData>(yaml) ?? new SessionsData();
     }
 
+    /// <summary>
+    /// Writes Sessions.yaml through a new file moved into place, so the result is owned by
+    /// this process and inherits the folder's ACL, and a link left at the path is replaced
+    /// rather than written through. Skipped when the folder itself is not trusted.
+    /// </summary>
     public void SaveSessions(SessionsData data)
     {
         var path = AppConstants.SessionsYamlPath;
-        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        var yaml = Serializer.Serialize(data);
-        File.WriteAllText(path, yaml);
+        var dir = Path.GetDirectoryName(path)!;
+        Directory.CreateDirectory(dir);
+        var reason = _trust.WhyUntrusted(dir);
+        if (reason != null)
+        {
+            _log.Warning($"Not saving Sessions.yaml because a non-administrator could change its folder: {reason}");
+            return;
+        }
+
+        var temp = Path.Combine(dir, $".Sessions.{Guid.NewGuid():N}.tmp");
+        try
+        {
+            using (var stream = new FileStream(temp, FileMode.CreateNew, FileAccess.Write))
+            using (var writer = new StreamWriter(stream))
+                writer.Write(Serializer.Serialize(data));
+            File.Move(temp, path, overwrite: true);
+        }
+        finally
+        {
+            if (File.Exists(temp)) File.Delete(temp);
+        }
     }
 
     /// <summary>

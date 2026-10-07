@@ -11,7 +11,13 @@ public static class AppConstants
 
     public static readonly string InstallDir = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
-        "sbin");
+        "ManageUsers");
+
+    /// <summary>Policy (Group Policy, Intune), read before every other settings source.</summary>
+    public const string PolicyRegistryPath = @"SOFTWARE\Policies\ManageUsers";
+
+    /// <summary>The tool's own machine settings, below policy and above Config.yaml.</summary>
+    public const string SettingsRegistryPath = @"SOFTWARE\ManageUsers\Settings";
 
     public static readonly string ManageUsersConfigDir = Path.Combine(ManagementRoot, "ManageUsers");
     public static readonly string ConfigYamlPath = Path.Combine(ManageUsersConfigDir, "Config.yaml");

@@ -46,6 +46,11 @@ public sealed class LogService : IDisposable
         _logFile = AppConstants.LogFileFor(now);
         _eventsFile = AppConstants.EventsFileFor(now);
         _auditFile = AppConstants.AuditLogFile;
+        // Links are removed before anything below the logs root is created, pruned,
+        // moved or opened, so none of it is done through one.
+        var notes = new List<string>();
+        foreach (var target in new[] { _logFile, _eventsFile, _auditFile })
+            notes.AddRange(TryRemoveLinks(target));
         Directory.CreateDirectory(AppConstants.LogDir);
         Directory.CreateDirectory(Path.GetDirectoryName(_logFile)!);
         PruneDayDirectories(now);
@@ -55,9 +60,24 @@ public sealed class LogService : IDisposable
         MigrateLegacyLog(AppConstants.LegacyAuditLogFile, _auditFile);
         RotateIfNeeded(_logFile);
         RotateIfNeeded(_auditFile);
-        _writer = new StreamWriter(_logFile, append: true) { AutoFlush = true };
-        _auditWriter = new StreamWriter(_auditFile, append: true) { AutoFlush = true };
-        _eventsWriter = new StreamWriter(_eventsFile, append: true) { AutoFlush = true };
+        _writer = SafeLogFile.OpenAppend(_logFile, notes);
+        _auditWriter = SafeLogFile.OpenAppend(_auditFile, notes);
+        _eventsWriter = SafeLogFile.OpenAppend(_eventsFile, notes);
+        foreach (var note in notes)
+            Warning(note);
+    }
+
+    /// <summary>Links on the way to <paramref name="target"/>, removed; see <see cref="SafeLogFile"/>.</summary>
+    private static List<string> TryRemoveLinks(string target)
+    {
+        try
+        {
+            return SafeLogFile.RemoveLinks(Path.GetDirectoryName(AppConstants.LogDir)!, target);
+        }
+        catch (Exception ex)
+        {
+            return [$"Could not check {target} for links: {ex.Message}"];
+        }
     }
 
     /// <summary>
@@ -233,6 +253,10 @@ public sealed class LogService : IDisposable
         {
             if (File.Exists(newFile) || !File.Exists(legacyFile))
                 return;
+            // The old folder was never locked down: history a standard user could have
+            // written or linked stays where it is.
+            if (FileTrust.Default.WhyUntrusted(legacyFile) != null)
+                return;
 
             File.Move(legacyFile, newFile);
 
@@ -240,7 +264,7 @@ public sealed class LogService : IDisposable
             {
                 var rotated = $"{legacyFile}.{i}";
                 var target = $"{newFile}.{i}";
-                if (File.Exists(rotated) && !File.Exists(target))
+                if (File.Exists(rotated) && !File.Exists(target) && FileTrust.Default.WhyUntrusted(rotated) == null)
                     File.Move(rotated, target);
             }
         }

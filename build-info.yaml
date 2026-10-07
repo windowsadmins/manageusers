@@ -6,4 +6,4 @@ product:
   description: Manages local user accounts on shared Windows devices by removing inactive accounts based on area/location deletion policies.
 signing_certificate: ${SIGNING_CERT_CN}
 postinstall_action: script
-install_location: 'C:\Program Files\sbin'
+install_location: 'C:\Program Files\ManageUsers'
