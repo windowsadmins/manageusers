@@ -11,6 +11,7 @@
 #   .\build.ps1 -Architecture arm64      # Build single architecture
 #   .\build.ps1 -ListCerts               # List available code signing certificates
 #   .\build.ps1 -Clean                   # Clean build output first
+#   .\build.ps1 -SkipApp                 # CLI only, without the Managed Users Cleanup app
 
 [CmdletBinding()]
 param(
@@ -22,12 +23,17 @@ param(
     [switch]$ListCerts,
     [string]$FindCertSubject,
     [switch]$Msi,
-    [switch]$Nupkg
+    [switch]$Nupkg,
+    [switch]$SkipApp
 )
 
 $ErrorActionPreference = 'Stop'
 $RootDir = $PSScriptRoot
 $ProjectPath = Join-Path $RootDir 'src' 'ManageUsers' 'ManageUsers.csproj'
+$AppProjectDir = Join-Path $RootDir 'src' 'ManageUsers.App'
+$AppProjectPath = Join-Path $AppProjectDir 'ManageUsers.App.csproj'
+# The app installs beside manageusers.exe in ManageUsers' own folder.
+$AppExeName = 'Managed Users Cleanup.exe'
 $OutputDir = Join-Path $RootDir 'release'
 $Configuration = 'Release'
 $TimeStampServer = 'http://timestamp.digicert.com'
@@ -243,6 +249,9 @@ if ($FindCertSubject) {
     return
 }
 
+# Publish-AppResources: resources.pri for the app, shared with the release workflow.
+. (Join-Path $PSScriptRoot 'eng' 'Publish-AppResources.ps1')
+
 # --- Main build ---
 
 Write-Host ''
@@ -304,7 +313,11 @@ if ($Clean) {
     # Also clean intermediate build artifacts
     $cleanPaths = @(
         (Join-Path $RootDir 'src' 'ManageUsers' 'bin'),
-        (Join-Path $RootDir 'src' 'ManageUsers' 'obj')
+        (Join-Path $RootDir 'src' 'ManageUsers' 'obj'),
+        (Join-Path $RootDir 'src' 'ManageUsers.Core' 'bin'),
+        (Join-Path $RootDir 'src' 'ManageUsers.Core' 'obj'),
+        (Join-Path $AppProjectDir 'bin'),
+        (Join-Path $AppProjectDir 'obj')
     )
     foreach ($p in $cleanPaths) {
         if (Test-Path $p) { Remove-Item $p -Recurse -Force }
@@ -345,6 +358,21 @@ foreach ($arch in $archs) {
 
     $exeSize = [math]::Round((Get-Item $exePath).Length / 1MB, 2)
     Write-Log "Built manageusers.exe ($runtime) - ${exeSize} MB" 'SUCCESS'
+
+    if (-not $SkipApp) {
+        # The app is a self-contained WinUI 3 folder, published to release\<arch>\app.
+        $appOutput = Join-Path $archOutput 'app'
+        if (Test-Path $appOutput) { Remove-Item $appOutput -Recurse -Force }
+        Write-Log "Publishing $AppExeName for $runtime..." 'INFO'
+        & dotnet publish $AppProjectPath --configuration $Configuration --runtime $runtime --self-contained true `
+            --output $appOutput "-p:Version=$Version" "-p:AssemblyVersion=$Version" "-p:FileVersion=$Version" --verbosity minimal
+        if ($LASTEXITCODE -ne 0) { throw "App build failed for $runtime" }
+        if (-not (Test-Path (Join-Path $appOutput $AppExeName))) { throw "Expected app output not found: $AppExeName" }
+        if (-not (Publish-AppResources -Arch $arch -OutputDir (Resolve-Path $appOutput).Path -AppProjectDir $AppProjectDir)) {
+            throw "XAML resource generation failed for $runtime; the app would not start without resources.pri"
+        }
+        Write-Log "Built $AppExeName ($runtime)" 'SUCCESS'
+    }
 }
 
 # Sign
@@ -352,7 +380,9 @@ if ($SigningCert) {
     Write-Host ''
     foreach ($arch in $archs) {
         $archDir = Join-Path $OutputDir $arch
-        $exeFiles = Get-ChildItem -Path $archDir -Filter '*.exe' -File -ErrorAction SilentlyContinue
+        $exeFiles = @(Get-ChildItem -Path $archDir -Filter '*.exe' -File -ErrorAction SilentlyContinue)
+        $appExe = Join-Path $archDir 'app' $AppExeName
+        if (Test-Path $appExe) { $exeFiles += Get-Item $appExe }
         foreach ($exe in $exeFiles) {
             Invoke-SignArtifact -Path $exe.FullName -CertThumbprint $SigningCert.Thumbprint -Store $SigningCert.Store
         }
@@ -392,10 +422,15 @@ foreach ($arch in $archs) {
     $buildInfoContent = $buildInfoTemplate -replace '\$\{ARCH\}', $arch
     Set-Content -Path $buildInfoFile -Value $buildInfoContent -Encoding UTF8 -NoNewline
 
-    # Stage payload — only the signed binary
+    # Stage payload: the signed CLI, and the app's files beside it
     if (Test-Path $payloadDir) { Remove-Item $payloadDir -Recurse -Force }
     New-Item -ItemType Directory -Path $payloadDir -Force | Out-Null
     Copy-Item -Path $sourceExe -Destination (Join-Path $payloadDir 'manageusers.exe') -Force
+    $appSource = Join-Path $OutputDir $arch 'app'
+    if (-not $SkipApp) {
+        if (-not (Test-Path (Join-Path $appSource $AppExeName))) { throw "App not built for ${arch}: $appSource" }
+        Copy-Item -Path (Join-Path $appSource '*') -Destination $payloadDir -Recurse -Force
+    }
 
     # Build .msi
     Write-Log "Building .msi for $arch..." 'INFO'

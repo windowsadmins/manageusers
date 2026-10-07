@@ -23,6 +23,17 @@ public static class AppConstants
     public static readonly string ConfigYamlPath = Path.Combine(ManageUsersConfigDir, "Config.yaml");
     public static readonly string SessionsYamlPath = Path.Combine(ManageUsersConfigDir, "Sessions.yaml");
     public static readonly string DefaultInventoryYamlPath = Path.Combine(ManagementRoot, "Inventory.yaml");
+    /// <summary>The CLI, installed in <see cref="InstallDir"/>.</summary>
+    public const string CliExecutableName = "manageusers.exe";
+
+    /// <summary>manageusers' own data folder, locked to administrators by the installer.</summary>
+    public static readonly string DataDir = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+        "ManagedUsers");
+
+    /// <summary>What the last simulation would remove; see <see cref="SimulationPlan"/>.</summary>
+    public static readonly string SimulationPlanFile = Path.Combine(DataDir, "simulation.json");
+
     public static readonly string LogDir = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
         "ManagedUsers", "logs");

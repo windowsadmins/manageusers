@@ -225,10 +225,7 @@ public static class SettingsResolver
         var dates = new List<TermDate>();
         foreach (var item in items)
         {
-            var parts = item.Split(['-', '/']);
-            if (parts.Length != 2 ||
-                !int.TryParse(parts[0], out var month) || !int.TryParse(parts[1], out var day) ||
-                month is < 1 or > 12 || day < 1 || day > DateTime.DaysInMonth(2024, month))
+            if (!TermDateText.TryParse(item, out var month, out var day))
                 return null;
             dates.Add(new TermDate { Month = month, Day = day });
         }

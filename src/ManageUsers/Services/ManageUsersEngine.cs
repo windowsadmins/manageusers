@@ -20,9 +20,18 @@ public sealed class ManageUsersEngine
     private readonly PerUserTaskService _perUserTasks;
     private readonly bool _simulate;
     private readonly bool _force;
+    private readonly IReadOnlyCollection<string>? _only;
 
-    public ManageUsersEngine(bool simulate, bool force, string? inventoryPath = null)
+    /// <summary>The reason behind the most recent delete decision, carried into the plan.</summary>
+    private string _lastReason = "";
+
+    /// <param name="only">
+    /// When set, a live run removes nothing outside these account names and profile folder
+    /// names: the list a person confirmed after a simulation.
+    /// </param>
+    public ManageUsersEngine(bool simulate, bool force, string? inventoryPath = null, IReadOnlyCollection<string>? only = null)
     {
+        _only = only is { Count: > 0 } ? only : null;
         _simulate = simulate;
         _force = force;
         _log = new LogService();
@@ -30,7 +39,7 @@ public sealed class ManageUsersEngine
         _policyConfig = _config.LoadPolicyConfig();
         _policy = new PolicyService(_log, _policyConfig);
         _enum = new UserEnumerationService(_log);
-        _delete = new UserDeletionService(_log, _config, simulate);
+        _delete = new UserDeletionService(_log, _config, simulate, _only);
         _repair = new RepairService(_log, simulate);
         _recycleBin = new RecycleBinService(_log, simulate);
         _perUserTasks = new PerUserTaskService(_log, simulate);
@@ -41,6 +50,8 @@ public sealed class ManageUsersEngine
         _log.Info("========================================");
         _log.Info("ManageUsers starting");
         _log.Info($"Mode: {(_simulate ? "SIMULATE" : "LIVE")} | Force: {_force}");
+        if (_only != null)
+            _log.Info($"Limited to {_only.Count} confirmed item(s): {string.Join(", ", _only)}");
         _log.Info("========================================");
 
         try
@@ -94,7 +105,7 @@ public sealed class ManageUsersEngine
 
                 if (shouldDelete)
                 {
-                    if (_delete.DeleteUser(user.Username, sessions))
+                    if (_delete.DeleteUser(user.Username, sessions, _lastReason))
                         deletedCount++;
                 }
             }
@@ -110,17 +121,16 @@ public sealed class ManageUsersEngine
             {
                 _log.Info($"Found {orphanCandidates.Count} orphan candidate(s) with no profile");
 
-                var orphans = new List<string>();
+                var orphans = new List<(string Name, string Reason)>();
                 foreach (var candidate in orphanCandidates)
                 {
                     if (EvaluateUser(candidate, policy, now))
-                        orphans.Add(candidate.Username);
+                        orphans.Add((candidate.Username, _lastReason));
                 }
 
                 if (orphans.Count > 0)
                 {
-                    _delete.RemoveOrphanedUsers(orphans, sessions);
-                    deletedCount += orphans.Count;
+                    deletedCount += _delete.RemoveOrphanedUsers(orphans, sessions);
                 }
                 else
                 {
@@ -137,7 +147,7 @@ public sealed class ManageUsersEngine
                 {
                     if (EvaluateStaleProfile(profile, policy, now))
                     {
-                        if (_delete.RemoveStaleProfile(profile))
+                        if (_delete.RemoveStaleProfile(profile, _lastReason))
                             deletedCount++;
                     }
                 }
@@ -153,7 +163,7 @@ public sealed class ManageUsersEngine
                 _log.Info($"Found {corruptProfiles.Count} corrupt profile(s) to remediate");
                 foreach (var profile in corruptProfiles)
                 {
-                    if (_delete.RemoveStaleProfile(profile))
+                    if (_delete.RemoveStaleProfile(profile, "corrupt profile state left by a partial deletion"))
                         deletedCount++;
                 }
             }
@@ -171,6 +181,9 @@ public sealed class ManageUsersEngine
 
             // Update hidden users on login screen
             _repair.UpdateHiddenUsers(exclusions);
+
+            if (_simulate)
+                PlanWriter.Write(_log, _delete.Planned);
 
             var removed = _delete.RemovedItems;
             _log.Audit("RUN_SUMMARY", $"mode={(_simulate ? "simulate" : "live")} removed={removed.Count} items=[{string.Join(", ", removed)}]");
@@ -192,12 +205,19 @@ public sealed class ManageUsersEngine
         }
     }
 
+    /// <summary>Audits a delete decision and remembers its reason for the simulation plan.</summary>
+    private void Decide(string kind, string name, string reason)
+    {
+        _lastReason = reason;
+        _log.Audit("DELETE_DECISION", $"{kind}={name} reason={reason}");
+    }
+
     private bool EvaluateUser(UserSessionInfo user, DeletionPolicy policy, DateTime now)
     {
         // Force term deletion — delete everything
         if (policy.ForceTermDeletion)
         {
-            _log.Audit("DELETE_DECISION", $"user={user.Username} reason=end-of-term force deletion");
+            Decide("user", user.Username, $"end-of-term force deletion");
             return true;
         }
 
@@ -217,7 +237,7 @@ public sealed class ManageUsersEngine
                 var age = now - user.CreationDate;
                 if (age >= threshold)
                 {
-                    _log.Audit("DELETE_DECISION", $"user={user.Username} reason=created {age.Days}d ago (threshold {policy.DurationDays}d, CreationOnly)");
+                    Decide("user", user.Username, $"created {age.Days}d ago (threshold {policy.DurationDays}d, CreationOnly)");
                     return true;
                 }
                 _log.Info($"CreationOnly: {user.Username} created {age.Days}d ago (threshold {policy.DurationDays}d) — keep");
@@ -231,7 +251,7 @@ public sealed class ManageUsersEngine
 
                 if (creationAge >= threshold && loginAge >= threshold)
                 {
-                    _log.Audit("DELETE_DECISION", $"user={user.Username} reason=created {creationAge.Days}d ago, last login {(user.LastLogin.HasValue ? $"{loginAge.Days}d ago" : "never")} (threshold {policy.DurationDays}d, LoginAndCreation)");
+                    Decide("user", user.Username, $"created {creationAge.Days}d ago, last login {(user.LastLogin.HasValue ? $"{loginAge.Days}d ago" : "never")} (threshold {policy.DurationDays}d, LoginAndCreation)");
                     return true;
                 }
                 _log.Info($"LoginAndCreation: {user.Username} created {creationAge.Days}d ago, last login {(user.LastLogin.HasValue ? $"{loginAge.Days}d ago" : "never")} (threshold {policy.DurationDays}d) — keep");
@@ -247,7 +267,7 @@ public sealed class ManageUsersEngine
     {
         if (policy.ForceTermDeletion)
         {
-            _log.Audit("DELETE_DECISION", $"profile={profile.FolderName} reason=end-of-term force deletion (stale profile)");
+            Decide("profile", profile.FolderName, $"end-of-term force deletion (stale profile)");
             return true;
         }
 
@@ -266,7 +286,7 @@ public sealed class ManageUsersEngine
                 var age = now - profile.CreationDate;
                 if (age >= threshold)
                 {
-                    _log.Audit("DELETE_DECISION", $"profile={profile.FolderName} reason=stale profile created {age.Days}d ago (threshold {policy.DurationDays}d, CreationOnly)");
+                    Decide("profile", profile.FolderName, $"stale profile created {age.Days}d ago (threshold {policy.DurationDays}d, CreationOnly)");
                     return true;
                 }
                 _log.Info($"CreationOnly: stale profile {profile.FolderName} created {age.Days}d ago (threshold {policy.DurationDays}d) — keep");
@@ -280,7 +300,7 @@ public sealed class ManageUsersEngine
 
                 if (creationAge >= threshold && lastUseAge >= threshold)
                 {
-                    _log.Audit("DELETE_DECISION", $"profile={profile.FolderName} reason=stale profile created {creationAge.Days}d ago, last use {(profile.LastUseTime.HasValue ? $"{lastUseAge.Days}d ago" : "never")} (threshold {policy.DurationDays}d, LoginAndCreation)");
+                    Decide("profile", profile.FolderName, $"stale profile created {creationAge.Days}d ago, last use {(profile.LastUseTime.HasValue ? $"{lastUseAge.Days}d ago" : "never")} (threshold {policy.DurationDays}d, LoginAndCreation)");
                     return true;
                 }
                 _log.Info($"LoginAndCreation: stale profile {profile.FolderName} created {creationAge.Days}d ago, last use {(profile.LastUseTime.HasValue ? $"{lastUseAge.Days}d ago" : "never")} (threshold {policy.DurationDays}d) — keep");

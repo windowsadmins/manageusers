@@ -30,12 +30,22 @@ public class Program
             "--inventory",
             "Path to a custom inventory YAML file (default: C:\\ProgramData\\Management\\Inventory.yaml)");
 
+        var onlyOption = new Option<string[]>(
+            "--only",
+            "Remove nothing outside these account names or profile folder names (repeat for each). " +
+            "Used by Managed Users Cleanup to run exactly the list a person confirmed.")
+        {
+            AllowMultipleArgumentsPerToken = false,
+            Arity = ArgumentArity.ZeroOrMore
+        };
+
         rootCommand.AddOption(simulateOption);
         rootCommand.AddOption(forceOption);
         rootCommand.AddOption(liveOption);
         rootCommand.AddOption(inventoryOption);
+        rootCommand.AddOption(onlyOption);
 
-        rootCommand.SetHandler((bool simulate, bool force, bool live, string? inventory) =>
+        rootCommand.SetHandler((bool simulate, bool force, bool live, string? inventory, string[] only) =>
         {
             // Single-instance guard
             bool createdNew;
@@ -49,7 +59,7 @@ public class Program
 
             try
             {
-                var engine = new ManageUsersEngine(simulate, force, inventory);
+                var engine = new ManageUsersEngine(simulate, force, inventory, only);
                 var exitCode = engine.Run();
                 Environment.Exit(exitCode);
             }
@@ -57,7 +67,7 @@ public class Program
             {
                 mutex.ReleaseMutex();
             }
-        }, simulateOption, forceOption, liveOption, inventoryOption);
+        }, simulateOption, forceOption, liveOption, inventoryOption, onlyOption);
 
         return await rootCommand.InvokeAsync(args);
     }

@@ -18,6 +18,7 @@ public sealed class UserDeletionService
     private readonly RecycleBinService _recycleBin;
     private readonly PerUserTaskService _perUserTasks;
     private readonly bool _simulate;
+    private readonly HashSet<string>? _only;
 
     /// <summary>Accounts and profile folders actually removed this run, for the end-of-run audit summary.</summary>
     internal List<string> RemovedItems { get; } = new();
@@ -25,11 +26,16 @@ public sealed class UserDeletionService
     /// <summary>Runs a command and returns its output. Replaced in tests to see what would run.</summary>
     internal Func<string, string, string> RunCommand { get; init; } = RunProcess;
 
-    public UserDeletionService(LogService log, ConfigService config, bool simulate)
+    /// <summary>What a simulation would remove, written out for the Managed Users Cleanup app.</summary>
+    internal List<PlanItem> Planned { get; } = new();
+
+    /// <param name="only">When set, nothing outside these account and profile folder names is removed.</param>
+    public UserDeletionService(LogService log, ConfigService config, bool simulate, IEnumerable<string>? only = null)
     {
         _log = log;
         _config = config;
         _simulate = simulate;
+        _only = only == null ? null : new HashSet<string>(only, StringComparer.OrdinalIgnoreCase);
         _recycleBin = new RecycleBinService(log, simulate);
         _perUserTasks = new PerUserTaskService(log, simulate);
     }
@@ -38,11 +44,15 @@ public sealed class UserDeletionService
     /// Delete a local user account and all associated data.
     /// Returns true if user was deleted (or deferred), false on error.
     /// </summary>
-    public bool DeleteUser(string username, SessionsData sessions)
+    public bool DeleteUser(string username, SessionsData sessions, string reason = "")
     {
+        if (!Confirmed(username))
+            return false;
+
         if (_simulate)
         {
             _log.Audit("USER_DELETE_SIMULATED", $"user={username}");
+            Planned.Add(new PlanItem { Kind = PlanItem.Account, Name = username, Reason = reason });
             return true;
         }
 
@@ -115,18 +125,37 @@ public sealed class UserDeletionService
                 continue;
             }
 
-            DeleteUser(user, sessions);
+            DeleteUser(user, sessions, "deferred by an earlier run while the user was signed in");
         }
     }
 
-    public void RemoveOrphanedUsers(List<string> orphans, SessionsData sessions)
+    /// <summary>
+    /// False, and logged, when this run is limited to a confirmed list that does not name
+    /// <paramref name="name"/>: whatever changed since the simulation, nothing else goes.
+    /// </summary>
+    private bool Confirmed(string name)
     {
-        foreach (var user in orphans)
+        if (_only == null || _only.Contains(name))
+            return true;
+        _log.Audit("DELETE_SKIPPED", $"item={name} reason=not in the confirmed list");
+        return false;
+    }
+
+    /// <summary>Removes local accounts that have no profile. Returns how many went (or would go).</summary>
+    public int RemoveOrphanedUsers(List<(string Name, string Reason)> orphans, SessionsData sessions)
+    {
+        var removed = 0;
+        foreach (var (user, reason) in orphans)
         {
+            if (!Confirmed(user))
+                continue;
+
             // This path once deleted the account even in a simulation.
             if (_simulate)
             {
                 _log.Audit("ORPHAN_USER_REMOVE_SIMULATED", $"user={user} reason=local account had no profile");
+                Planned.Add(new PlanItem { Kind = PlanItem.Orphan, Name = user, Reason = reason });
+                removed++;
                 continue;
             }
 
@@ -135,6 +164,7 @@ public sealed class UserDeletionService
             {
                 _log.Audit("ORPHAN_USER_REMOVED", $"user={user} reason=local account had no profile");
                 RemovedItems.Add(user);
+                removed++;
             }
             else
             {
@@ -142,16 +172,21 @@ public sealed class UserDeletionService
             }
             ClearDeferred(user, sessions);
         }
+        return removed;
     }
 
     /// <summary>
     /// Remove a stale Entra/cached profile — no local account exists, just registry + folder.
     /// </summary>
-    public bool RemoveStaleProfile(StaleProfileInfo profile)
+    public bool RemoveStaleProfile(StaleProfileInfo profile, string reason = "")
     {
+        if (!Confirmed(profile.FolderName))
+            return false;
+
         if (_simulate)
         {
             _log.Audit("STALE_PROFILE_REMOVE_SIMULATED", $"profile={profile.FolderName} sid={profile.Sid ?? "none"} path={profile.ProfilePath}");
+            Planned.Add(new PlanItem { Kind = PlanItem.Profile, Name = profile.FolderName, Reason = reason, Path = profile.ProfilePath });
             return true;
         }
 

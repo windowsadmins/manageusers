@@ -1,0 +1,113 @@
+<Page
+    x:Class="ManageUsers.App.Views.RunPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:models="using:ManageUsers.Models"
+    NavigationCacheMode="Required">
+
+    <Grid RowSpacing="0">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <!-- ═══ Run Control Bar ═══ -->
+        <Grid Grid.Row="0" Padding="24,16">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+
+            <Button x:Name="SimulateButton" Grid.Column="0" AutomationProperties.Name="Simulate" Click="SimulateButton_Click" VerticalAlignment="Center"
+                    Style="{StaticResource AccentButtonStyle}"
+                    ToolTipService.ToolTip="Show what a run would remove, without changing anything">
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                    <FontIcon Glyph="&#xE768;" FontSize="16" />
+                    <TextBlock Text="Simulate" />
+                </StackPanel>
+            </Button>
+
+            <Button x:Name="LiveButton" Grid.Column="1" AutomationProperties.Name="Live cleanup" Click="LiveButton_Click" VerticalAlignment="Center" Margin="12,0,0,0"
+                    ToolTipService.ToolTip="Simulate, confirm the list, then remove exactly those accounts">
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                    <FontIcon Glyph="&#xE74D;" FontSize="16" />
+                    <TextBlock Text="Live cleanup..." />
+                </StackPanel>
+            </Button>
+
+            <Button x:Name="ClearButton" Grid.Column="2" Content="Clear" Click="ClearButton_Click"
+                    Margin="12,0,0,0" VerticalAlignment="Center" Visibility="Collapsed" />
+
+            <!-- Right-aligned status -->
+            <StackPanel Grid.Column="4" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                <ProgressRing x:Name="RunningProgress" IsActive="False" Width="20" Height="20" />
+                <TextBlock x:Name="RunningLabel"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                           VerticalAlignment="Center" Visibility="Collapsed" />
+                <TextBlock x:Name="ElevationNote" Style="{StaticResource CaptionTextBlockStyle}"
+                           Foreground="{ThemeResource TextFillColorTertiaryBrush}" VerticalAlignment="Center"
+                           Text="Each run asks for administrator approval." />
+            </StackPanel>
+        </Grid>
+
+        <!-- ═══ Progress Bar ═══ -->
+        <ProgressBar x:Name="RunProgress" Grid.Row="1" IsIndeterminate="True" Height="4" CornerRadius="2"
+                     Margin="24,0,24,12" Visibility="Collapsed" />
+
+        <!-- ═══ Result Banner ═══ -->
+        <InfoBar x:Name="ResultBanner" Grid.Row="2"
+                 IsOpen="False" IsClosable="True" Margin="24,0,24,8" />
+
+        <MenuFlyoutSeparator Grid.Row="3" />
+
+        <!-- ═══ Output and decision list ═══ -->
+        <Grid Grid.Row="4">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="380" />
+            </Grid.ColumnDefinitions>
+
+            <ScrollViewer x:Name="ConsoleScroller" Grid.Column="0" Padding="12"
+                          Background="{ThemeResource SystemControlBackgroundChromeMediumLowBrush}">
+                <RichTextBlock x:Name="ConsoleOutput" IsTextSelectionEnabled="True"
+                               FontFamily="Cascadia Mono, Consolas, Courier New" FontSize="12"
+                               TextWrapping="Wrap" Padding="4,0" />
+            </ScrollViewer>
+
+            <Border Grid.Column="1" Width="1" Background="{ThemeResource DividerStrokeColorDefaultBrush}" />
+
+            <Grid Grid.Column="2" Padding="16,12" RowSpacing="8">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+                <TextBlock Text="Decision list" Style="{StaticResource SubtitleTextBlockStyle}" />
+                <TextBlock x:Name="PlanCaption" Grid.Row="1" Style="{StaticResource CaptionTextBlockStyle}"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="WrapWholeWords" />
+                <ListView x:Name="PlanList" Grid.Row="2" SelectionMode="None">
+                    <ListView.ItemTemplate>
+                        <DataTemplate x:DataType="models:PlanItem">
+                            <StackPanel Padding="0,6" Spacing="2">
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <TextBlock Text="{x:Bind Name}" Style="{StaticResource BodyStrongTextBlockStyle}" />
+                                    <TextBlock Text="{x:Bind Kind}" Style="{StaticResource CaptionTextBlockStyle}"
+                                               Foreground="{ThemeResource TextFillColorTertiaryBrush}" VerticalAlignment="Center" />
+                                </StackPanel>
+                                <TextBlock Text="{x:Bind Reason}" Style="{StaticResource CaptionTextBlockStyle}"
+                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="WrapWholeWords" />
+                            </StackPanel>
+                        </DataTemplate>
+                    </ListView.ItemTemplate>
+                </ListView>
+            </Grid>
+        </Grid>
+    </Grid>
+</Page>

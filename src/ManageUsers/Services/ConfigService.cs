@@ -62,24 +62,12 @@ public sealed class ConfigService
 
     private ConfigFile? LoadConfigFile()
     {
-        var path = AppConstants.ConfigYamlPath;
-        if (!File.Exists(path))
-        {
-            _log.Info($"Config file not found: {path}");
-            return null;
-        }
-        if (!IsTrusted(path, "Config.yaml"))
-            return null;
-
-        try
-        {
-            return Deserializer.Deserialize<ConfigFile>(File.ReadAllText(path));
-        }
-        catch (Exception ex)
-        {
-            _log.Warning($"Failed to parse Config.yaml: {ex.Message} — ignoring it");
-            return null;
-        }
+        if (_trust.NormalizeOwner(AppConstants.ConfigYamlPath) is { } note)
+            _log.Info(note);
+        var result = ConfigFileReader.Read(_trust);
+        if (result.Info != null) _log.Info(result.Info);
+        if (result.Warning != null) _log.Warning(result.Warning);
+        return result.File;
     }
 
     /// <summary>
