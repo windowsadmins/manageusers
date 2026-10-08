@@ -1,0 +1,179 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ManageUsers ADMX policy template
+
+  Deploy with Intune (Devices > Configuration > Import ADMX), or copy this file to
+  C:\Windows\PolicyDefinitions\ and en-US\ManageUsers.adml to
+  C:\Windows\PolicyDefinitions\en-US\ for Group Policy.
+
+  Registry target: HKLM\SOFTWARE\Policies\ManageUsers
+
+  Every policy writes one value that manageusers.exe and the Managed Users Cleanup app
+  read before machine settings and Config.yaml. A value that is present is "Managed by
+  Policy" in the app's Prefs tab and cannot be edited there. Disabling or unconfiguring
+  a policy removes its value, so the next layer applies again; only the two on/off
+  policies write an explicit 0 when disabled.
+-->
+<policyDefinitions xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                   revision="1.0"
+                   schemaVersion="1.0"
+                   xmlns="http://schemas.microsoft.com/GroupPolicy/2006/07/PolicyDefinitions">
+
+  <policyNamespaces>
+    <target prefix="ManageUsers" namespace="WindowsAdmins.Policies.ManageUsers" />
+  </policyNamespaces>
+
+  <resources minRequiredRevision="1.0" />
+
+  <supportedOn>
+    <definitions>
+      <definition name="SUPPORTED_ManageUsers" displayName="$(string.SUPPORTED_ManageUsers)" />
+    </definitions>
+  </supportedOn>
+
+  <categories>
+    <category name="ManageUsers" displayName="$(string.Cat_ManageUsers)" explainText="$(string.Cat_ManageUsers_Help)" />
+    <category name="NeverDelete" displayName="$(string.Cat_NeverDelete)">
+      <parentCategory ref="ManageUsers" />
+    </category>
+    <category name="Administrators" displayName="$(string.Cat_Administrators)">
+      <parentCategory ref="ManageUsers" />
+    </category>
+    <category name="DefaultRule" displayName="$(string.Cat_DefaultRule)">
+      <parentCategory ref="ManageUsers" />
+    </category>
+    <category name="EndOfTerm" displayName="$(string.Cat_EndOfTerm)">
+      <parentCategory ref="ManageUsers" />
+    </category>
+    <category name="Rules" displayName="$(string.Cat_Rules)">
+      <parentCategory ref="ManageUsers" />
+    </category>
+  </categories>
+
+  <policies>
+
+    <policy name="Exclusions"
+            class="Machine"
+            displayName="$(string.Exclusions)"
+            explainText="$(string.Exclusions_Help)"
+            key="SOFTWARE\Policies\ManageUsers"
+            presentation="$(presentation.Exclusions)">
+      <parentCategory ref="NeverDelete" />
+      <supportedOn ref="SUPPORTED_ManageUsers" />
+      <elements>
+        <multiText id="Exclusions_Value" valueName="Exclusions" maxLength="256" />
+      </elements>
+    </policy>
+
+    <policy name="DeleteAdmins"
+            class="Machine"
+            displayName="$(string.DeleteAdmins)"
+            explainText="$(string.DeleteAdmins_Help)"
+            key="SOFTWARE\Policies\ManageUsers"
+            valueName="DeleteAdmins">
+      <parentCategory ref="Administrators" />
+      <supportedOn ref="SUPPORTED_ManageUsers" />
+      <enabledValue><decimal value="1" /></enabledValue>
+      <disabledValue><decimal value="0" /></disabledValue>
+    </policy>
+
+    <policy name="DeletableAdmins"
+            class="Machine"
+            displayName="$(string.DeletableAdmins)"
+            explainText="$(string.DeletableAdmins_Help)"
+            key="SOFTWARE\Policies\ManageUsers"
+            presentation="$(presentation.DeletableAdmins)">
+      <parentCategory ref="Administrators" />
+      <supportedOn ref="SUPPORTED_ManageUsers" />
+      <elements>
+        <multiText id="DeletableAdmins_Value" valueName="DeletableAdmins" maxLength="256" />
+      </elements>
+    </policy>
+
+    <policy name="DefaultPolicyDurationDays"
+            class="Machine"
+            displayName="$(string.DefaultPolicyDurationDays)"
+            explainText="$(string.DefaultPolicyDurationDays_Help)"
+            key="SOFTWARE\Policies\ManageUsers"
+            presentation="$(presentation.DefaultPolicyDurationDays)">
+      <parentCategory ref="DefaultRule" />
+      <supportedOn ref="SUPPORTED_ManageUsers" />
+      <elements>
+        <decimal id="DefaultPolicyDurationDays_Value" valueName="DefaultPolicyDurationDays" required="true" minValue="0" maxValue="36500" />
+      </elements>
+    </policy>
+
+    <policy name="DefaultPolicyStrategy"
+            class="Machine"
+            displayName="$(string.DefaultPolicyStrategy)"
+            explainText="$(string.DefaultPolicyStrategy_Help)"
+            key="SOFTWARE\Policies\ManageUsers"
+            presentation="$(presentation.DefaultPolicyStrategy)">
+      <parentCategory ref="DefaultRule" />
+      <supportedOn ref="SUPPORTED_ManageUsers" />
+      <elements>
+        <enum id="DefaultPolicyStrategy_Value" valueName="DefaultPolicyStrategy" required="true">
+          <item displayName="$(string.Strategy_LoginAndCreation)">
+            <value><string>login_and_creation</string></value>
+          </item>
+          <item displayName="$(string.Strategy_CreationOnly)">
+            <value><string>creation_only</string></value>
+          </item>
+        </enum>
+      </elements>
+    </policy>
+
+    <policy name="DefaultPolicyForceAtEndOfTerm"
+            class="Machine"
+            displayName="$(string.DefaultPolicyForceAtEndOfTerm)"
+            explainText="$(string.DefaultPolicyForceAtEndOfTerm_Help)"
+            key="SOFTWARE\Policies\ManageUsers"
+            valueName="DefaultPolicyForceAtEndOfTerm">
+      <parentCategory ref="DefaultRule" />
+      <supportedOn ref="SUPPORTED_ManageUsers" />
+      <enabledValue><decimal value="1" /></enabledValue>
+      <disabledValue><decimal value="0" /></disabledValue>
+    </policy>
+
+    <policy name="InventoryPath"
+            class="Machine"
+            displayName="$(string.InventoryPath)"
+            explainText="$(string.InventoryPath_Help)"
+            key="SOFTWARE\Policies\ManageUsers"
+            presentation="$(presentation.InventoryPath)">
+      <parentCategory ref="DefaultRule" />
+      <supportedOn ref="SUPPORTED_ManageUsers" />
+      <elements>
+        <text id="InventoryPath_Value" valueName="InventoryPath" required="true" maxLength="1024" />
+      </elements>
+    </policy>
+
+    <policy name="EndOfTermDates"
+            class="Machine"
+            displayName="$(string.EndOfTermDates)"
+            explainText="$(string.EndOfTermDates_Help)"
+            key="SOFTWARE\Policies\ManageUsers"
+            presentation="$(presentation.EndOfTermDates)">
+      <parentCategory ref="EndOfTerm" />
+      <supportedOn ref="SUPPORTED_ManageUsers" />
+      <elements>
+        <multiText id="EndOfTermDates_Value" valueName="EndOfTermDates" maxLength="16" />
+      </elements>
+    </policy>
+
+    <policy name="Policies"
+            class="Machine"
+            displayName="$(string.Policies)"
+            explainText="$(string.Policies_Help)"
+            key="SOFTWARE\Policies\ManageUsers"
+            presentation="$(presentation.Policies)">
+      <parentCategory ref="Rules" />
+      <supportedOn ref="SUPPORTED_ManageUsers" />
+      <elements>
+        <multiText id="Policies_Value" valueName="Policies" required="true" maxLength="4096" />
+      </elements>
+    </policy>
+
+  </policies>
+</policyDefinitions>
