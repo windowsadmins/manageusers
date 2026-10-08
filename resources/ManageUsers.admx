@@ -100,7 +100,7 @@
       <parentCategory ref="DefaultRule" />
       <supportedOn ref="SUPPORTED_ManageUsers" />
       <elements>
-        <decimal id="DefaultPolicyDurationDays_Value" valueName="DefaultPolicyDurationDays" required="true" minValue="0" maxValue="36500" />
+        <text id="DefaultPolicyDurationDays_Value" valueName="DefaultPolicyDurationDays" required="true" maxLength="6" />
       </elements>
     </policy>
 
