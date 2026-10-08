@@ -148,6 +148,8 @@ jobs:
               }
             } finally { $zip.Dispose() }
           }
+          # Policy templates, laid out as PolicyDefinitions expects: ManageUsers.admx and en-US\ManageUsers.adml.
+          Compress-Archive -Path "resources/*" -DestinationPath "release/ManageUsers-PolicyDefinitions.zip" -Force
 
       - name: Create GitHub Release
         shell: pwsh

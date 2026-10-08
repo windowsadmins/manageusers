@@ -109,6 +109,14 @@ New-Item -Path 'HKLM:\SOFTWARE\Policies\ManageUsers' -Force | Out-Null
 Set-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\ManageUsers' -Name Policies -Value '[{"name":"Kiosks","match":{"catalog":"^Kiosk$"},"duration_days":1,"strategy":"creation_only"}]'
 ```
 
+### Group Policy and Intune (ADMX)
+
+`resources/ManageUsers.admx` and `resources/en-US/ManageUsers.adml` define one policy for each setting above, under **Computer Configuration > Administrative Templates > ManageUsers**. Each release also attaches them as `ManageUsers-PolicyDefinitions.zip`.
+
+For Group Policy, copy `ManageUsers.admx` to `C:\Windows\PolicyDefinitions` (or the central store) and `ManageUsers.adml` to its `en-US` folder. For Intune, import both under **Devices > Configuration > Import ADMX**.
+
+List settings (`Exclusions`, `DeletableAdmins`, `EndOfTermDates`, `Policies`) are written as REG_MULTI_SZ, one entry per line; `Policies` takes YAML lines, or the whole JSON list on one line. Disabling a policy removes its value, so machine settings and Config.yaml apply again, except the two on/off policies (`DeleteAdmins`, `DefaultPolicyForceAtEndOfTerm`), which write 0.
+
 ### File permissions
 
 manageusers runs as SYSTEM, so it reads `Config.yaml`, `Sessions.yaml` and the inventory file only when no non-administrator could have written them. A file is refused, and the run logs why, when:
@@ -218,6 +226,7 @@ ManageUsers/
 ├── build.ps1                         # Build + sign script
 ├── ManageUsers.sln
 ├── build-info.yaml                   # cimipkg package metadata
+├── resources/                        # ManageUsers.admx + en-US/ManageUsers.adml policy templates
 ├── scripts/                          # Install/uninstall scripts
 │   └── postinstall.ps1
 ├── tests/ManageUsers.Tests/          # Settings, file-permission, log-link and app-logic tests

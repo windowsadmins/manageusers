@@ -1,0 +1,149 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ManageUsers ADML language file (English)
+  Companion to ManageUsers.admx
+-->
+<policyDefinitionResources xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+                           xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                           revision="1.0"
+                           schemaVersion="1.0"
+                           xmlns="http://schemas.microsoft.com/GroupPolicy/2006/07/PolicyDefinitions">
+
+  <displayName>ManageUsers</displayName>
+  <description>Settings for ManageUsers, which removes inactive local accounts from shared Windows devices.</description>
+
+  <resources>
+    <stringTable>
+      <string id="SUPPORTED_ManageUsers">Windows 10 or later with ManageUsers installed</string>
+
+      <string id="Cat_ManageUsers">ManageUsers</string>
+      <string id="Cat_ManageUsers_Help">Settings for manageusers.exe and the Managed Users Cleanup app. Each policy writes one value under HKLM\SOFTWARE\Policies\ManageUsers, which takes precedence over machine settings (HKLM\SOFTWARE\ManageUsers\Settings) and Config.yaml. The app's Prefs tab shows a policy-set value as "Managed by Policy" and does not let it be edited.</string>
+      <string id="Cat_NeverDelete">Never delete</string>
+      <string id="Cat_Administrators">Administrators</string>
+      <string id="Cat_DefaultRule">When no rule matches</string>
+      <string id="Cat_EndOfTerm">End of term</string>
+      <string id="Cat_Rules">Rules</string>
+
+      <string id="Exclusions">Accounts never deleted</string>
+      <string id="Exclusions_Help">Local accounts that are never deleted, one account name per line. Matched case-insensitively.
+
+These are kept alongside the built-in accounts (Administrator, DefaultAccount, Guest, WDAGUtilityAccount, defaultuser0), the device's own Sessions.yaml exclusions and whoever is signed in.
+
+Enabled: this list replaces the exclusions from machine settings and Config.yaml. An empty list clears them.
+Disabled or Not Configured: the value is removed, and machine settings, then Config.yaml, apply.
+
+Registry: HKLM\SOFTWARE\Policies\ManageUsers\Exclusions (REG_MULTI_SZ)
+Config.yaml key: exclusions</string>
+
+      <string id="DeleteAdmins">Allow deleting administrator accounts</string>
+      <string id="DeleteAdmins_Help">Controls whether local accounts in the Administrators group can be deleted.
+
+Enabled: administrator accounts are deleted like any other account once they are inactive.
+Disabled: administrator accounts are never deleted, except those listed in "Administrators that can still be deleted".
+Not Configured: machine settings, then Config.yaml, apply. The built-in default is to never delete administrators.
+
+Registry: HKLM\SOFTWARE\Policies\ManageUsers\DeleteAdmins (REG_DWORD 1 or 0)
+Config.yaml key: delete_admins</string>
+
+      <string id="DeletableAdmins">Administrators that can still be deleted</string>
+      <string id="DeletableAdmins_Help">Administrator account names that can be deleted even while administrators are protected, one per line. Matched case-insensitively. Ignored when "Allow deleting administrator accounts" is on, and an account in "Accounts never deleted" is always kept.
+
+Enabled: this list replaces the one from machine settings and Config.yaml. An empty list clears it.
+Disabled or Not Configured: the value is removed, and machine settings, then Config.yaml, apply.
+
+Registry: HKLM\SOFTWARE\Policies\ManageUsers\DeletableAdmins (REG_MULTI_SZ)
+Config.yaml key: deletable_admins</string>
+
+      <string id="DefaultPolicyDurationDays">Delete after (days)</string>
+      <string id="DefaultPolicyDurationDays_Help">The number of days of inactivity after which an account is deleted on a device that no rule matches. The built-in default is 28.
+
+Disabled or Not Configured: machine settings, then Config.yaml, then the default apply.
+
+Registry: HKLM\SOFTWARE\Policies\ManageUsers\DefaultPolicyDurationDays (REG_DWORD)
+Config.yaml key: default_policy.duration_days</string>
+
+      <string id="DefaultPolicyStrategy">Counting from</string>
+      <string id="DefaultPolicyStrategy_Help">Which dates count towards inactivity on a device that no rule matches.
+
+Login and creation: an account is deleted only when both its creation and its last sign-in are older than the threshold. This is the built-in default.
+Creation only: an account is deleted once it is older than the threshold, whether or not it has signed in recently.
+
+Disabled or Not Configured: machine settings, then Config.yaml, then the default apply.
+
+Registry: HKLM\SOFTWARE\Policies\ManageUsers\DefaultPolicyStrategy (REG_SZ login_and_creation or creation_only)
+Config.yaml key: default_policy.strategy</string>
+      <string id="Strategy_LoginAndCreation">Login and creation</string>
+      <string id="Strategy_CreationOnly">Creation only</string>
+
+      <string id="DefaultPolicyForceAtEndOfTerm">Delete everything at end of term</string>
+      <string id="DefaultPolicyForceAtEndOfTerm_Help">Controls whether, on a device that no rule matches, every eligible account is deleted on an end-of-term date regardless of how recently it was used.
+
+Enabled: accounts are deleted on each end-of-term date.
+Disabled: end-of-term dates do not force deletion.
+Not Configured: machine settings, then Config.yaml, apply. The built-in default is off.
+
+Registry: HKLM\SOFTWARE\Policies\ManageUsers\DefaultPolicyForceAtEndOfTerm (REG_DWORD 1 or 0)
+Config.yaml key: default_policy.force_at_end_of_term</string>
+
+      <string id="InventoryPath">Inventory file</string>
+      <string id="InventoryPath_Help">The path of the inventory YAML file whose catalog, area, room and usage values rules are matched against. The built-in default is C:\ProgramData\Management\Inventory.yaml. A --inventory flag on the command line still overrides this for that run.
+
+Disabled or Not Configured: machine settings, then Config.yaml, then the default apply.
+
+Registry: HKLM\SOFTWARE\Policies\ManageUsers\InventoryPath (REG_SZ)
+Config.yaml key: inventory_path</string>
+
+      <string id="EndOfTermDates">End-of-term dates</string>
+      <string id="EndOfTermDates_Help">Dates on which rules that delete everything at end of term apply, one month-day pair per line, such as 4-30.
+
+The built-in dates (4-30, 8-31, 12-31) apply only when no layer supplies rules.
+
+Enabled: these dates replace those from machine settings and Config.yaml. An empty list clears them. If any line is not a valid month-day pair the whole value is ignored and the next layer applies.
+Disabled or Not Configured: the value is removed, and machine settings, then Config.yaml, apply.
+
+Registry: HKLM\SOFTWARE\Policies\ManageUsers\EndOfTermDates (REG_MULTI_SZ)
+Config.yaml key: end_of_term_dates</string>
+
+      <string id="Policies">Deletion rules</string>
+      <string id="Policies_Help">The ordered list of deletion rules, written as the YAML (or JSON) list that Config.yaml's policies: key holds. Each line of the box is one line of YAML, or put the whole list as JSON on one line. Rules are checked in order against the device's inventory and the first match decides; match fields are regular expressions.
+
+Example, as JSON on one line:
+[{"name":"Kiosks","match":{"catalog":"^Kiosk$"},"duration_days":1,"strategy":"creation_only"}]
+
+Each rule takes name, match (catalog, area, room, usage), duration_days, strategy (login_and_creation or creation_only) and force_at_end_of_term (true or false).
+
+Enabled: these rules replace those from machine settings and Config.yaml. A value that does not parse is ignored and the next layer applies.
+Disabled or Not Configured: the value is removed, and machine settings, then Config.yaml, apply.
+
+Registry: HKLM\SOFTWARE\Policies\ManageUsers\Policies (REG_MULTI_SZ)
+Config.yaml key: policies</string>
+    </stringTable>
+
+    <presentationTable>
+      <presentation id="Exclusions">
+        <multiTextBox refId="Exclusions_Value">Account names, one per line:</multiTextBox>
+      </presentation>
+      <presentation id="DeletableAdmins">
+        <multiTextBox refId="DeletableAdmins_Value">Administrator account names, one per line:</multiTextBox>
+      </presentation>
+      <presentation id="DefaultPolicyDurationDays">
+        <decimalTextBox refId="DefaultPolicyDurationDays_Value" defaultValue="28" spinStep="1">Days:</decimalTextBox>
+      </presentation>
+      <presentation id="DefaultPolicyStrategy">
+        <dropdownList refId="DefaultPolicyStrategy_Value" defaultItem="0" noSort="true">Counting from:</dropdownList>
+      </presentation>
+      <presentation id="InventoryPath">
+        <textBox refId="InventoryPath_Value">
+          <label>Inventory file path:</label>
+          <defaultValue>C:\ProgramData\Management\Inventory.yaml</defaultValue>
+        </textBox>
+      </presentation>
+      <presentation id="EndOfTermDates">
+        <multiTextBox refId="EndOfTermDates_Value">Month-day pairs, one per line (for example 4-30):</multiTextBox>
+      </presentation>
+      <presentation id="Policies">
+        <multiTextBox refId="Policies_Value">Rules, as YAML lines or one line of JSON:</multiTextBox>
+      </presentation>
+    </presentationTable>
+  </resources>
+</policyDefinitionResources>
