@@ -19,13 +19,13 @@ public sealed class UserEnumerationService
         _log = log;
     }
 
-    public List<UserSessionInfo> GetUserSessions(HashSet<string> exclusions, bool protectAdmins, HashSet<string>? deletableAdmins = null)
+    public List<UserSessionInfo> GetUserSessions(HashSet<string> exclusions, bool protectAdmins, DeletableAdminMatcher? deletableAdmins = null)
     {
         var results = new List<UserSessionInfo>();
         var profiles = LoadProfiles();
         var localUsers = EnumerateLocalUsers();
         var adminSids = protectAdmins ? GetAdministratorSids() : EmptySidSet;
-        deletableAdmins ??= EmptySidSet;
+        deletableAdmins ??= DeletableAdminMatcher.None;
 
         foreach (var (name, disabled, _) in localUsers)
         {
@@ -53,9 +53,9 @@ public sealed class UserEnumerationService
             // profile and never log in interactively (e.g. winadmins).
             if (protectAdmins && adminSids.Contains(sid))
             {
-                if (deletableAdmins.Contains(name))
+                if (deletableAdmins.Matches(name))
                 {
-                    _log.Info($"Administrator {name} is listed in deletable_admins — eligible for deletion");
+                    _log.Info($"Administrator {name} matches deletable_admins — eligible for deletion");
                 }
                 else
                 {
@@ -300,13 +300,13 @@ public sealed class UserEnumerationService
     /// CreationDate comes from the account's password age rather than a profile
     /// directory that by definition does not exist. See GetAccountAgeFromPasswordAge.
     /// </summary>
-    public List<UserSessionInfo> FindOrphanedUsers(HashSet<string> exclusions, bool protectAdmins, HashSet<string>? deletableAdmins = null)
+    public List<UserSessionInfo> FindOrphanedUsers(HashSet<string> exclusions, bool protectAdmins, DeletableAdminMatcher? deletableAdmins = null)
     {
         var orphans = new List<UserSessionInfo>();
         var profiles = LoadProfiles();
         var localUsers = EnumerateLocalUsers();
         var adminSids = protectAdmins ? GetAdministratorSids() : EmptySidSet;
-        deletableAdmins ??= EmptySidSet;
+        deletableAdmins ??= DeletableAdminMatcher.None;
 
         foreach (var (name, _, passwordAgeSeconds) in localUsers)
         {
@@ -315,7 +315,7 @@ public sealed class UserEnumerationService
             // An admin account with no profile (service/SSH accounts like winadmins)
             // would otherwise be deleted here every run with no age check. Protect it
             // unless delete_admins: true or it's named in deletable_admins.
-            if (protectAdmins && !deletableAdmins.Contains(name))
+            if (protectAdmins && !deletableAdmins.Matches(name))
             {
                 var sid = ResolveSid(name);
                 if (!string.IsNullOrEmpty(sid) && adminSids.Contains(sid))

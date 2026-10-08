@@ -146,6 +146,17 @@ Exclusions are merged from three sources (all case-insensitive):
 
 The currently logged-in console user is also excluded automatically.
 
+### Administrators
+
+Local administrators are never deleted while `delete_admins` is `false`, the default. `deletable_admins` opts specific administrators back in without lifting that guard. Each entry matches case-insensitively:
+
+| Entry | Matches | Does not match |
+|---|---|---|
+| `old-admin` | `old-admin`, `OLD-ADMIN` | `old-admin2` |
+| `admin-*` | `admin-1`, `Admin-Lab` | `admin`, `admin-` |
+
+A `*` is allowed only at the end of an entry. A bare `*`, or one anywhere else, is ignored and the run logs a warning, since it would opt every administrator in. An excluded account is never deleted, even when an entry matches it.
+
 ### Sessions
 `C:\ProgramData\Management\ManageUsers\Sessions.yaml` — machine-specific exclusions and deferred state:
 ```yaml
