@@ -55,11 +55,13 @@ Registry: HKLM\SOFTWARE\Policies\ManageUsers\DeletableAdmins (REG_MULTI_SZ)
 Config.yaml key: deletable_admins</string>
 
       <string id="DefaultPolicyDurationDays">Delete after (days)</string>
-      <string id="DefaultPolicyDurationDays_Help">The number of days of inactivity after which an account is deleted on a device that no rule matches. The built-in default is 28.
+      <string id="DefaultPolicyDurationDays_Help">The number of days of inactivity after which an account is deleted on a device that no rule matches, as a whole number: -1 = never delete. The built-in default is 28.
+
+The value is stored as text so that -1 can be entered. A value that is not a whole number is ignored and the next layer applies.
 
 Disabled or Not Configured: machine settings, then Config.yaml, then the default apply.
 
-Registry: HKLM\SOFTWARE\Policies\ManageUsers\DefaultPolicyDurationDays (REG_DWORD)
+Registry: HKLM\SOFTWARE\Policies\ManageUsers\DefaultPolicyDurationDays (REG_SZ, such as 28 or -1)
 Config.yaml key: default_policy.duration_days</string>
 
       <string id="DefaultPolicyStrategy">Counting from</string>
@@ -110,7 +112,7 @@ Config.yaml key: end_of_term_dates</string>
 Example, as JSON on one line:
 [{"name":"Kiosks","match":{"catalog":"^Kiosk$"},"duration_days":1,"strategy":"creation_only"}]
 
-Each rule takes name, match (catalog, area, room, usage), duration_days, strategy (login_and_creation or creation_only) and force_at_end_of_term (true or false).
+Each rule takes name, match (catalog, area, room, usage), duration_days (-1 = never delete), strategy (login_and_creation or creation_only) and force_at_end_of_term (true or false).
 
 Enabled: these rules replace those from machine settings and Config.yaml. A value that does not parse is ignored and the next layer applies.
 Disabled or Not Configured: the value is removed, and machine settings, then Config.yaml, apply.
@@ -127,7 +129,10 @@ Config.yaml key: policies</string>
         <multiTextBox refId="DeletableAdmins_Value">Administrator account names, one per line:</multiTextBox>
       </presentation>
       <presentation id="DefaultPolicyDurationDays">
-        <decimalTextBox refId="DefaultPolicyDurationDays_Value" defaultValue="28" spinStep="1">Days:</decimalTextBox>
+        <textBox refId="DefaultPolicyDurationDays_Value">
+          <label>Days (-1 = never delete):</label>
+          <defaultValue>28</defaultValue>
+        </textBox>
       </presentation>
       <presentation id="DefaultPolicyStrategy">
         <dropdownList refId="DefaultPolicyStrategy_Value" defaultItem="0" noSort="true">Counting from:</dropdownList>

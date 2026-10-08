@@ -94,7 +94,7 @@ Both registry keys are read in the 64-bit view. Every setting can be set by poli
 | `DeleteAdmins` | REG_DWORD 0/1, or REG_SZ `true`/`false` | `delete_admins` |
 | `DeletableAdmins` | REG_MULTI_SZ, or separated REG_SZ | `deletable_admins` |
 | `Policies` | REG_SZ or REG_MULTI_SZ holding the YAML or JSON rule list | `policies` |
-| `DefaultPolicyDurationDays` | REG_DWORD | `default_policy.duration_days` |
+| `DefaultPolicyDurationDays` | REG_DWORD, or REG_SZ such as `28` or `-1` (never delete) | `default_policy.duration_days` |
 | `DefaultPolicyStrategy` | REG_SZ | `default_policy.strategy` |
 | `DefaultPolicyForceAtEndOfTerm` | REG_DWORD 0/1, or REG_SZ `true`/`false` | `default_policy.force_at_end_of_term` |
 | `EndOfTermDates` | REG_MULTI_SZ, or separated REG_SZ, of month-day pairs such as `4-30` | `end_of_term_dates` |

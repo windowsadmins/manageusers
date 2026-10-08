@@ -96,10 +96,11 @@ public class AdmxTests
             "- name: Kiosks",
             "  match:",
             "    catalog: ^Kiosk$",
-            "  duration_days: 1",
+            "  duration_days: -1",
             "  strategy: creation_only"
         },
         (_, "multiText") => new[] { "svc-one", "svc-two" },
+        (SettingsResolver.DefaultPolicyDurationDays, "text") => "-1",
         (_, "boolean") or (_, "decimal") => 1,
         (_, "enum") => "creation_only",
         (_, "text") => @"D:\Inventory.yaml",
@@ -118,10 +119,32 @@ public class AdmxTests
             Assert.Equal(SettingSource.Policy, resolved.Sources[name]);
         Assert.Equal(["svc-one", "svc-two"], resolved.Config.Exclusions);
         Assert.True(resolved.Config.DeleteAdmins);
-        Assert.Equal("Kiosks", Assert.Single(resolved.Config.Policies).Name);
+        var rule = Assert.Single(resolved.Config.Policies);
+        Assert.Equal("Kiosks", rule.Name);
+        Assert.Equal(-1, rule.DurationDays);
+        Assert.Equal(-1, resolved.Config.DefaultPolicy.DurationDays);
         Assert.Equal("creation_only", resolved.Config.DefaultPolicy.Strategy);
         Assert.Equal(2, resolved.Config.EndOfTermDates.Count);
         Assert.Equal(@"D:\Inventory.yaml", resolved.InventoryPath);
+    }
+
+    /// <summary>
+    /// -1 (never delete) is a real duration, and an ADMX decimal is unsigned, so the
+    /// duration is a text element: REG_SZ, which the resolver parses as a whole number.
+    /// </summary>
+    [Fact]
+    public void Admx_DurationIsTextSoMinusOneFits()
+    {
+        var element = Admx().Descendants()
+            .Single(e => (string?)e.Attribute("valueName") == SettingsResolver.DefaultPolicyDurationDays);
+        Assert.Equal("text", element.Name.LocalName);
+        Assert.Equal("DefaultPolicyDurationDays_Value", (string?)element.Attribute("id"));
+
+        var resolved = SettingsResolver.Resolve(
+            new DictionarySettingsSource(new Dictionary<string, object> { [SettingsResolver.DefaultPolicyDurationDays] = "-1" }),
+            DictionarySettingsSource.Empty, file: null);
+        Assert.Equal(-1, resolved.Config.DefaultPolicy.DurationDays);
+        Assert.Equal(SettingSource.Policy, resolved.Sources[SettingsResolver.DefaultPolicyDurationDays]);
     }
 
     [Fact]
