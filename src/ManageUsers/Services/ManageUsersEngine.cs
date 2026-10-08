@@ -99,7 +99,7 @@ public sealed class ManageUsersEngine
             var deletedCount = 0;
             var now = DateTime.Now;
 
-            foreach (var user in users)
+            foreach (var user in WithProfile(users))
             {
                 var shouldDelete = EvaluateUser(user, policy, now);
 
@@ -189,7 +189,7 @@ public sealed class ManageUsersEngine
             _log.Audit("RUN_SUMMARY", $"mode={(_simulate ? "simulate" : "live")} removed={removed.Count} items=[{string.Join(", ", removed)}]");
 
             _log.Info("========================================");
-            _log.Info($"ManageUsers complete — {deletedCount} user(s) removed");
+            _log.Info(RunWording.Summary(_simulate, deletedCount));
             _log.Info("========================================");
             return 0;
         }
@@ -204,6 +204,14 @@ public sealed class ManageUsersEngine
             _log.Dispose();
         }
     }
+
+    /// <summary>
+    /// The accounts the main pass evaluates. An account with no profile is left to the
+    /// orphan pass, which dates it by its password age; the main pass has no profile folder
+    /// to date it by, and evaluating it in both listed it twice in a simulation.
+    /// </summary>
+    internal static IEnumerable<UserSessionInfo> WithProfile(IEnumerable<UserSessionInfo> users) =>
+        users.Where(u => u.HasProfile);
 
     /// <summary>Audits a delete decision and remembers its reason for the simulation plan.</summary>
     private void Decide(string kind, string name, string reason)

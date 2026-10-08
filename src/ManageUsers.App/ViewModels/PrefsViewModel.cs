@@ -207,10 +207,10 @@ public partial class PrefsViewModel : ObservableObject
     public string VersionDisplay => $"Version {AppVersion}";
 
     public static string AppVersion =>
-        typeof(PrefsViewModel).Assembly
-            .GetCustomAttributes(typeof(System.Reflection.AssemblyMetadataAttribute), false)
-            .OfType<System.Reflection.AssemblyMetadataAttribute>()
-            .FirstOrDefault(a => a.Key == "BuildTimestamp")?.Value ?? "dev";
+        VersionText.FromInformational(typeof(PrefsViewModel).Assembly
+            .GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
+            .OfType<System.Reflection.AssemblyInformationalVersionAttribute>()
+            .FirstOrDefault()?.InformationalVersion);
 
     // ── Load ─────────────────────────────────────────────────────
 
