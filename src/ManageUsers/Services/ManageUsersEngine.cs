@@ -63,18 +63,16 @@ public sealed class ManageUsersEngine
             var protectAdmins = !_policyConfig.DeleteAdmins;
 
             // Specific admin accounts an operator has opted in to deleting while the
-            // global admin guard is still on. Exclusions always win over this list.
-            var deletableAdmins = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var a in _policyConfig.DeletableAdmins ?? [])
-            {
-                if (!string.IsNullOrWhiteSpace(a) && !exclusions.Contains(a.Trim()))
-                    deletableAdmins.Add(a.Trim());
-            }
+            // global admin guard is still on, by exact name or by a trailing-* prefix.
+            // Exclusions always win over this list.
+            var deletableAdmins = new DeletableAdminMatcher(_policyConfig.DeletableAdmins, exclusions);
+            foreach (var rejected in deletableAdmins.Rejected)
+                _log.Warning($"Ignoring deletable_admins entry {rejected}: a * is allowed only at the end of a name prefix");
 
             _log.Info($"Exclusions loaded: {exclusions.Count} users");
             _log.Info($"Administrator protection: {(protectAdmins ? "ENABLED — local admins are never deleted (delete_admins: false)" : "DISABLED — admins are eligible for deletion (delete_admins: true)")}");
             if (protectAdmins && deletableAdmins.Count > 0)
-                _log.Info($"Admins explicitly opted in to deletion (deletable_admins): {string.Join(", ", deletableAdmins)}");
+                _log.Info($"Admins explicitly opted in to deletion (deletable_admins): {string.Join(", ", deletableAdmins.Entries)}");
             _log.Info($"Inventory: area={inventory.Area}, location={inventory.Location}, usage={inventory.Usage}");
 
             // Process deferred deletions from previous runs

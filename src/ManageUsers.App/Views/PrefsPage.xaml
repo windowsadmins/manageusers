@@ -185,7 +185,7 @@
                             <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
                         <TextBox Text="{x:Bind ViewModel.NewDeletableAdmin, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                 PlaceholderText="Administrator account name" KeyDown="AddDeletableAdminBox_KeyDown"
+                                 PlaceholderText="Account name, or a prefix ending in * (admin-*)" KeyDown="AddDeletableAdminBox_KeyDown"
                                  AutomationProperties.Name="New deletable administrator"
                                  IsEnabled="{x:Bind ViewModel.CanEditDeletableAdmins, Mode=OneWay}" />
                         <Button Grid.Column="1" Content="Add" Click="AddDeletableAdmin_Click" AutomationProperties.Name="Add deletable administrator"

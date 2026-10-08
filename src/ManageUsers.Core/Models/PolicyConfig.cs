@@ -27,7 +27,8 @@ public sealed class PolicyConfig
     /// stale/rogue local admin without exposing every admin to deletion. Ignored
     /// when delete_admins is true (everything is already deletable). An account in
     /// the exclusions list always wins over this list (exclusion = never delete).
-    /// Matched case-insensitively by account name.
+    /// Matched case-insensitively by account name. An entry ending in a single *
+    /// is a name prefix ("admin-*"); a bare * or a * elsewhere is ignored.
     /// </summary>
     [YamlMember(Alias = "deletable_admins")]
     public List<string> DeletableAdmins { get; set; } = [];
