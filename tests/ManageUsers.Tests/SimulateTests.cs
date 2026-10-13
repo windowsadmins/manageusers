@@ -69,4 +69,34 @@ public sealed class SimulateTests : IDisposable
         Assert.Equal(["net user \"orphan1\" /delete"], _commands);
         Assert.Equal(["orphan1"], service.RemovedItems);
     }
+
+    [Fact]
+    public void DeferredDeletionKeepsAnAccountExcludedSinceItWasDeferred()
+    {
+        var service = Service(simulate: true);
+        var sessions = new SessionsData { DeferredDeletes = ["svc-kept", "lab01"] };
+        var exclusions = new HashSet<string>(["SVC-KEPT"], StringComparer.OrdinalIgnoreCase);
+
+        service.ProcessDeferredDeletions(sessions, exclusions);
+
+        Assert.Equal(["lab01"], service.Planned.Select(p => p.Name));
+        Assert.Empty(_commands);
+    }
+
+    [Theory]
+    [InlineData("policy")]
+    [InlineData("machine")]
+    [InlineData("file")]
+    public void ExclusionsFromEverySettingsLayerReachTheRunsExclusionSet(string layer)
+    {
+        var value = new Dictionary<string, object> { [SettingsResolver.Exclusions] = new[] { "svc-kept" } };
+        var resolved = SettingsResolver.Resolve(
+            layer == "policy" ? new DictionarySettingsSource(value) : DictionarySettingsSource.Empty,
+            layer == "machine" ? new DictionarySettingsSource(value) : DictionarySettingsSource.Empty,
+            layer == "file" ? new ConfigFile { Exclusions = ["svc-kept"] } : null);
+
+        var exclusions = new ConfigService(_log).GetEffectiveExclusions(new SessionsData(), resolved.Config.Exclusions);
+
+        Assert.Contains("SVC-KEPT", exclusions);
+    }
 }

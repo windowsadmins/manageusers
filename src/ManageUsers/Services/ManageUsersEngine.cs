@@ -78,7 +78,7 @@ public sealed class ManageUsersEngine
             _log.Info($"Inventory: area={inventory.Area}, location={inventory.Location}, usage={inventory.Usage}");
 
             // Process deferred deletions from previous runs
-            _delete.ProcessDeferredDeletions(sessions);
+            _delete.ProcessDeferredDeletions(sessions, exclusions);
 
             // Gather user session data
             var users = _enum.GetUserSessions(exclusions, protectAdmins, deletableAdmins);
