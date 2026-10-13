@@ -20,3 +20,13 @@ public sealed class InvertBoolConverter : IValueConverter
     public object ConvertBack(object value, Type targetType, object parameter, string language)
         => value is not true;
 }
+
+/// <summary>Collapses a text element whose text is empty, so it leaves no gap.</summary>
+public sealed class StringToVisibilityConverter : IValueConverter
+{
+    public object Convert(object value, Type targetType, object parameter, string language)
+        => value is string { Length: > 0 } ? Visibility.Visible : Visibility.Collapsed;
+
+    public object ConvertBack(object value, Type targetType, object parameter, string language)
+        => throw new NotSupportedException();
+}

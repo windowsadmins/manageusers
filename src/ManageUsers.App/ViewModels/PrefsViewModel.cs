@@ -4,26 +4,23 @@ using System.ComponentModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using ManageUsers.Models;
 using ManageUsers.Services;
-using Microsoft.UI.Dispatching;
 
 namespace ManageUsers.App.ViewModels;
 
 /// <summary>
 /// ViewModel for the Prefs tab. Shows every setting with the value a run would use and
-/// where it comes from. Settings live in HKLM, so the tab is read-only unless this process
-/// is elevated; Unlock relaunches the app elevated on this tab. When elevated, a changed
-/// setting saves to machine settings (HKLM\SOFTWARE\ManageUsers\Settings) after a short
-/// pause. Only settings changed here are written, so values that come from Config.yaml
-/// stay there. A setting policy manages is locked and never written.
+/// where it comes from. Every setting policy does not set is editable; edits stay pending
+/// until Save writes them to machine settings (HKLM\SOFTWARE\ManageUsers\Settings), asking
+/// for administrator approval then when this process is not elevated. Only settings changed
+/// here are written, so values that come from Config.yaml stay there. A setting policy
+/// manages is disabled, shown in gray under one banner, and never written.
 /// </summary>
 public partial class PrefsViewModel : ObservableObject
 {
-    private readonly DispatcherQueue? _dispatcher = DispatcherQueue.GetForCurrentThread();
     private readonly HashSet<string> _dirty = [];
-    private System.Threading.Timer? _autoSaveTimer;
     private bool _isLoading;
 
-    public static readonly string[] Strategies = ["login_and_creation", "creation_only"];
+    public static string[] Strategies => SettingsPayload.Strategies;
 
     public PrefsViewModel()
     {
@@ -81,8 +78,12 @@ public partial class PrefsViewModel : ObservableObject
     public bool HasConfigFileWarning => ConfigFileWarning.Length > 0;
     partial void OnConfigFileWarningChanged(string value) => OnPropertyChanged(nameof(HasConfigFileWarning));
 
+    /// <summary>True when policy sets any setting, which shows the banner explaining the gray ones.</summary>
+    public bool HasPolicySettings => _managedKeys.Count > 0;
+
+    /// <summary>Where a setting comes from. Empty for one policy sets: the gray control and the banner say it.</summary>
     private string SourceText(string key) => _managedKeys.Contains(key)
-        ? "Managed by Policy"
+        ? ""
         : _sources.TryGetValue(key, out var source) ? source switch
         {
             SettingSource.MachineSettings => "Set on this device",
@@ -90,7 +91,7 @@ public partial class PrefsViewModel : ObservableObject
             _ => "Default"
         } : "Default";
 
-    private bool CanEdit(string key) => PrefsElevation.CanEdit(IsElevated, _managedKeys.Contains(key));
+    private bool CanEdit(string key) => PrefsElevation.CanEdit(_managedKeys.Contains(key));
 
     public bool CanEditExclusions => CanEdit(SettingsResolver.Exclusions);
     public bool CanEditDeleteAdmins => CanEdit(SettingsResolver.DeleteAdmins);
@@ -112,63 +113,13 @@ public partial class PrefsViewModel : ObservableObject
     public string EndOfTermDatesSource => SourceText(SettingsResolver.EndOfTermDates);
     public string InventoryPathSource => SourceText(SettingsResolver.InventoryPath);
 
-    public bool IsExclusionsLocked => _managedKeys.Contains(SettingsResolver.Exclusions);
-    public bool IsDeleteAdminsLocked => _managedKeys.Contains(SettingsResolver.DeleteAdmins);
-    public bool IsDeletableAdminsLocked => _managedKeys.Contains(SettingsResolver.DeletableAdmins);
-    public bool IsPoliciesLocked => _managedKeys.Contains(SettingsResolver.Policies);
-    public bool IsDefaultPolicyLocked =>
-        _managedKeys.Contains(SettingsResolver.DefaultPolicyDurationDays) ||
-        _managedKeys.Contains(SettingsResolver.DefaultPolicyStrategy) ||
-        _managedKeys.Contains(SettingsResolver.DefaultPolicyForceAtEndOfTerm);
-    public bool IsEndOfTermDatesLocked => _managedKeys.Contains(SettingsResolver.EndOfTermDates);
-    public bool IsInventoryPathLocked => _managedKeys.Contains(SettingsResolver.InventoryPath);
-
-    /// <summary>Settings saved on this device that an elevated user can clear, falling back to Config.yaml or the default.</summary>
-    public bool HasMachineSettings => IsElevated && _sources.Any(kv => kv.Value == SettingSource.MachineSettings);
+    /// <summary>Settings saved on this device, which Clear removes so Config.yaml or the default applies.</summary>
+    public bool HasMachineSettings => _sources.Any(kv => kv.Value == SettingSource.MachineSettings);
 
     // ── Elevation State ─────────────────────────────────────────
 
-    /// <summary>True when this process can write HKLM (elevated administrator token).</summary>
+    /// <summary>True when this process can write HKLM itself; otherwise Save asks for approval.</summary>
     public bool IsElevated { get; } = PrefsElevation.IsProcessElevated();
-
-    public bool IsReadOnly => !IsElevated;
-
-    [ObservableProperty] private string _unlockError = "";
-
-    public bool HasUnlockError => !string.IsNullOrEmpty(UnlockError);
-
-    partial void OnUnlockErrorChanged(string value) => OnPropertyChanged(nameof(HasUnlockError));
-
-    /// <summary>
-    /// Relaunches this app elevated through UAC, opening on the Prefs tab. Returns true when the
-    /// elevated instance started, so the caller can close this one. A cancelled UAC prompt
-    /// returns false quietly and leaves the tab read-only.
-    /// </summary>
-    public bool TryRelaunchElevated()
-    {
-        UnlockError = "";
-        try
-        {
-            var exe = Environment.ProcessPath;
-            if (string.IsNullOrEmpty(exe))
-            {
-                UnlockError = "Could not find the app's own executable to relaunch.";
-                return false;
-            }
-
-            using var process = System.Diagnostics.Process.Start(PrefsElevation.BuildElevatedRelaunch(exe));
-            return process is not null;
-        }
-        catch (Exception ex) when (PrefsElevation.IsElevationCancelled(ex))
-        {
-            return false;
-        }
-        catch (Exception ex)
-        {
-            UnlockError = $"Could not relaunch as administrator: {ex.Message}";
-            return false;
-        }
-    }
 
     // ── Save Status ──────────────────────────────────────────────
 
@@ -176,6 +127,11 @@ public partial class PrefsViewModel : ObservableObject
     [ObservableProperty] private string _saveDetail = "";
 
     public enum SaveState { Idle, Saving, Saved, Failed }
+
+    /// <summary>True while edits are waiting for Save or Discard.</summary>
+    [ObservableProperty] private bool _hasPendingChanges;
+
+    partial void OnSaveDetailChanged(string value) => OnPropertyChanged(nameof(SaveStatusMessage));
 
     partial void OnSaveStatusChanged(SaveState value)
     {
@@ -196,7 +152,7 @@ public partial class PrefsViewModel : ObservableObject
     {
         SaveState.Saving => "Saving...",
         SaveState.Saved  => "Saved to this device",
-        SaveState.Failed => $"Save failed: {SaveDetail}",
+        SaveState.Failed => $"Not saved: {SaveDetail}",
         _ => ""
     };
 
@@ -211,6 +167,24 @@ public partial class PrefsViewModel : ObservableObject
             .GetCustomAttributes(typeof(System.Reflection.AssemblyMetadataAttribute), false)
             .OfType<System.Reflection.AssemblyMetadataAttribute>()
             .FirstOrDefault(a => a.Key == "BuildTimestamp")?.Value ?? "dev";
+
+    // ── Services ─────────────────────────────────────────────────
+
+    /// <summary>The scheduled tasks and services ManageUsers runs from, read-only.</summary>
+    public ObservableCollection<ServiceRow> Services { get; } = [];
+
+    /// <summary>Reads each component's state off the UI thread, then shows it.</summary>
+    public async Task RefreshServicesAsync()
+    {
+        var rows = await Task.Run(() => InstallFootprint.Components
+            .Select(c => new ServiceRow(c, c.Kind == InstallFootprint.ScheduledTask
+                ? InstallFootprint.QueryTask(c.Name)
+                : InstallFootprint.UnreadableTask(c.Name)))
+            .ToList());
+        Services.Clear();
+        foreach (var row in rows)
+            Services.Add(row);
+    }
 
     // ── Load ─────────────────────────────────────────────────────
 
@@ -239,10 +213,13 @@ public partial class PrefsViewModel : ObservableObject
         DefaultStrategy = Strategies.Contains(config.DefaultPolicy.Strategy) ? config.DefaultPolicy.Strategy : Strategies[0];
         DefaultForceAtEndOfTerm = config.DefaultPolicy.ForceAtEndOfTerm;
         InventoryPath = resolved.InventoryPath;
-        _dirty.Clear();
+        lock (_dirty)
+            _dirty.Clear();
+        HasPendingChanges = false;
 
         // Notify all bindings (management locks, sources, computed display properties)
         OnPropertyChanged(string.Empty);
+        OnPropertyChanged(nameof(HasPolicySettings));
 
         _isLoading = false;
     }
@@ -313,56 +290,107 @@ public partial class PrefsViewModel : ObservableObject
     /// <summary>Called by a rule when one of its fields changes.</summary>
     internal void RuleEdited() => MarkDirty(SettingsResolver.Policies);
 
-    // ── Auto-Save ─────────────────────────────────────────────────
+    // ── Save ──────────────────────────────────────────────────────
 
     private void MarkDirty(string key)
     {
-        // Not elevated: HKLM is not writable and the tab is read-only, so never save.
-        if (_isLoading || !IsElevated || _managedKeys.Contains(key))
+        if (_isLoading || _managedKeys.Contains(key))
             return;
 
         lock (_dirty)
             _dirty.Add(key);
-
-        _autoSaveTimer?.Dispose();
-        _autoSaveTimer = new System.Threading.Timer(_ => _dispatcher?.TryEnqueue(SaveDirty), null, 600, System.Threading.Timeout.Infinite);
+        HasPendingChanges = true;
+        if (SaveStatus != SaveState.Saving)
+            SaveStatus = SaveState.Idle;
     }
 
-    private void SaveDirty()
+    /// <summary>Writes the pending edits to machine settings, then reloads what a run would use.</summary>
+    public async Task SaveAsync()
     {
         Dictionary<string, object?> values;
         lock (_dirty)
-        {
             values = _dirty.ToDictionary(k => k, ValueOf);
-            _dirty.Clear();
-        }
         if (values.Count == 0) return;
-        Save(values);
+        if (await WriteAsync(values))
+            Load();
     }
 
-    /// <summary>Removes every machine setting, so Config.yaml and the defaults apply again.</summary>
-    public void ClearMachineSettings()
+    /// <summary>Drops the pending edits and shows the saved settings again.</summary>
+    public void Discard()
     {
-        Save(SettingsResolver.AllSettingNames.Where(n => !_managedKeys.Contains(n)).ToDictionary(n => n, _ => (object?)null));
+        SaveStatus = SaveState.Idle;
         Load();
     }
 
-    private void Save(Dictionary<string, object?> values)
+    /// <summary>Removes every machine setting, so Config.yaml and the defaults apply again.</summary>
+    public async Task ClearMachineSettingsAsync()
+    {
+        var values = SettingsResolver.AllSettingNames.Where(n => !_managedKeys.Contains(n)).ToDictionary(n => n, _ => (object?)null);
+        if (await WriteAsync(values))
+            Load();
+    }
+
+    /// <summary>
+    /// Writes <paramref name="values"/> to HKLM: directly when elevated, otherwise through the
+    /// app's own executable run elevated and headless, which reads them over a named pipe only
+    /// this user, Administrators and SYSTEM can open. A declined UAC prompt or a failure leaves
+    /// the edits pending. True when the values were written.
+    /// </summary>
+    private async Task<bool> WriteAsync(Dictionary<string, object?> values)
     {
         SaveStatus = SaveState.Saving;
         try
         {
-            MachineSettingsStore.Save(values, RegistrySettingsSource.Policy());
-            foreach (var key in values.Keys)
-                _sources[key] = values[key] == null ? SettingSource.Default : SettingSource.MachineSettings;
+            if (IsElevated)
+            {
+                MachineSettingsStore.Save(values, RegistrySettingsSource.Policy());
+            }
+            else
+            {
+                var exe = Environment.ProcessPath;
+                if (string.IsNullOrEmpty(exe))
+                    return Failed("could not find the app's own executable.");
+
+                var pipeName = PrefsElevation.NewPipeName();
+                await using var pipe = PrefsElevation.CreatePayloadPipe(pipeName);
+                using var process = System.Diagnostics.Process.Start(PrefsElevation.BuildApplySettings(exe, pipeName));
+                if (process == null)
+                    return Failed("the settings writer did not start.");
+
+                using (var timeout = new CancellationTokenSource(PrefsElevation.ConnectTimeout))
+                {
+                    var connected = pipe.WaitForConnectionAsync(timeout.Token);
+                    if (await Task.WhenAny(connected, process.WaitForExitAsync(timeout.Token)) != connected || !pipe.IsConnected)
+                    {
+                        timeout.Cancel();
+                        return Failed(process.HasExited
+                            ? SettingsPayload.ExitCodeText(process.ExitCode) + "."
+                            : "the settings writer did not connect in time.");
+                    }
+                    await PrefsElevation.SendPayloadAsync(pipe, SettingsPayload.Serialize(values), timeout.Token);
+                }
+                await process.WaitForExitAsync();
+                if (process.ExitCode != SettingsPayload.Saved)
+                    return Failed(SettingsPayload.ExitCodeText(process.ExitCode) + ".");
+            }
             SaveStatus = SaveState.Saved;
-            OnPropertyChanged(string.Empty);
+            return true;
+        }
+        catch (Exception ex) when (PrefsElevation.IsElevationCancelled(ex))
+        {
+            return Failed("administrator approval was declined.");
         }
         catch (Exception ex)
         {
-            SaveDetail = ex.Message;
-            SaveStatus = SaveState.Failed;
+            return Failed(ex.Message);
         }
+    }
+
+    private bool Failed(string reason)
+    {
+        SaveDetail = reason;
+        SaveStatus = SaveState.Failed;
+        return false;
     }
 
     private object? ValueOf(string key) => key switch
@@ -463,4 +491,18 @@ public partial class RuleItem(PrefsViewModel owner) : ObservableObject
     };
 
     private static string? Blank(string s) => string.IsNullOrWhiteSpace(s) ? null : s.Trim();
+}
+
+/// <summary>One expander in the Services card: a header with the status, and the detail rows.</summary>
+public sealed class ServiceRow(InstalledComponent component, ComponentStatus status)
+{
+    public string FriendlyName => component.FriendlyName;
+    public string Summary => status.Summary;
+    public string Status => status.Status;
+    public IReadOnlyList<ComponentDetail> Details => status.Details;
+
+    // The status dot: running is success, ready is attention, everything else neutral.
+    public bool IsRunning => Status == "Running";
+    public bool IsReady => Status == "Ready";
+    public bool IsNeutral => !IsRunning && !IsReady;
 }

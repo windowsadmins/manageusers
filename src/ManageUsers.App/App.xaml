@@ -10,6 +10,7 @@
             </ResourceDictionary.MergedDictionaries>
             <cvt:BoolToVisibilityConverter x:Key="BoolToVisibility" />
             <cvt:InvertBoolConverter x:Key="InvertBool" />
+            <cvt:StringToVisibilityConverter x:Key="StringToVisibility" />
         </ResourceDictionary>
     </Application.Resources>
 </Application>

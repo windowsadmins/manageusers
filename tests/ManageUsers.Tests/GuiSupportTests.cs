@@ -140,16 +140,131 @@ public class GuiSupportTests
     }
 
     [Fact]
-    public void PrefsAreEditableOnlyElevatedAndUnmanaged()
+    public void PrefsAreEditableUnlessPolicySetsThem()
     {
-        Assert.True(PrefsElevation.CanEdit(isElevated: true, isPolicyManaged: false));
-        Assert.False(PrefsElevation.CanEdit(isElevated: true, isPolicyManaged: true));
-        Assert.False(PrefsElevation.CanEdit(isElevated: false, isPolicyManaged: false));
-        Assert.True(PrefsElevation.OpensOnPrefs(["--prefs"]));
-        Assert.False(PrefsElevation.OpensOnPrefs(["--simulate"]));
-        var relaunch = PrefsElevation.BuildElevatedRelaunch(@"C:\Program Files\ManageUsers\Managed Users Cleanup.exe");
-        Assert.Equal("runas", relaunch.Verb);
-        Assert.Equal("--prefs", relaunch.Arguments);
+        // Elevation is no longer part of the decision: an unelevated app edits and asks at Save.
+        Assert.True(PrefsElevation.CanEdit(isPolicyManaged: false));
+        Assert.False(PrefsElevation.CanEdit(isPolicyManaged: true));
+    }
+
+    [Fact]
+    public void SaveRunsTheAppElevatedAndHeadlessOnAPayloadPipe()
+    {
+        var pipe = PrefsElevation.NewPipeName();
+        var start = PrefsElevation.BuildApplySettings(@"C:\Program Files\ManageUsers\Managed Users Cleanup.exe", pipe);
+        Assert.Equal("runas", start.Verb);
+        Assert.True(start.UseShellExecute);
+        Assert.Equal($"--apply-settings {pipe}", start.Arguments);
+        Assert.Throws<ArgumentException>(() => PrefsElevation.BuildApplySettings("app.exe", @"C:\Temp\p.json"));
+
+        Assert.True(PrefsElevation.IsApplySettings(["--apply-settings", pipe], out var name));
+        Assert.Equal(pipe, name);
+        Assert.True(PrefsElevation.IsApplySettings(["--apply-settings", @"\\server\pipe\other"], out name));
+        Assert.Null(name);
+        Assert.True(PrefsElevation.IsApplySettings(["--apply-settings"], out name));
+        Assert.Null(name);
+        Assert.False(PrefsElevation.IsApplySettings([], out _));
+    }
+
+    [Fact]
+    public async Task PayloadTravelsOverThePipeAndNeverTouchesDisk()
+    {
+        var name = PrefsElevation.NewPipeName();
+        var json = SettingsPayload.Serialize(EveryValue());
+        await using var server = PrefsElevation.CreatePayloadPipe(name);
+
+        var reader = Task.Run(() => PrefsElevation.ReceivePayload(name, TimeSpan.FromSeconds(10)));
+        await server.WaitForConnectionAsync().WaitAsync(TimeSpan.FromSeconds(10));
+        await PrefsElevation.SendPayloadAsync(server, json, CancellationToken.None);
+
+        Assert.Equal(json, await reader.WaitAsync(TimeSpan.FromSeconds(10)));
+    }
+
+    [Fact]
+    public void WriterGivesUpWhenNoPipeIsThere() =>
+        Assert.Null(PrefsElevation.ReceivePayload(PrefsElevation.NewPipeName(), TimeSpan.FromMilliseconds(200)));
+
+    private static Dictionary<string, object?> EveryValue() => new()
+    {
+        [SettingsResolver.Exclusions] = new List<string> { "svc-a", "svc b" },
+        [SettingsResolver.DeleteAdmins] = true,
+        [SettingsResolver.DeletableAdmins] = new List<string>(),
+        [SettingsResolver.Policies] = new List<PolicyRule>
+        {
+            new() { Name = "Kiosks", Match = new MatchCriteria { Catalog = "^Kiosk$" }, DurationDays = -1, Strategy = "creation_only", ForceAtEndOfTerm = true }
+        },
+        [SettingsResolver.DefaultPolicyDurationDays] = 14,
+        [SettingsResolver.DefaultPolicyStrategy] = "creation_only",
+        [SettingsResolver.DefaultPolicyForceAtEndOfTerm] = false,
+        [SettingsResolver.EndOfTermDates] = new List<TermDate> { new() { Month = 4, Day = 30 } },
+        [SettingsResolver.InventoryPath] = null
+    };
+
+    [Fact]
+    public void PayloadRoundTripsEverySetting()
+    {
+        var back = SettingsPayload.Deserialize(SettingsPayload.Serialize(EveryValue()));
+
+        Assert.Equal(SettingsResolver.AllSettingNames.Order(), back.Keys.Order());
+        Assert.Equal(["svc-a", "svc b"], Assert.IsType<List<string>>(back[SettingsResolver.Exclusions]));
+        Assert.Equal(true, back[SettingsResolver.DeleteAdmins]);
+        Assert.Empty(Assert.IsType<List<string>>(back[SettingsResolver.DeletableAdmins]));
+        var rule = Assert.Single(Assert.IsType<List<PolicyRule>>(back[SettingsResolver.Policies]));
+        Assert.Equal(("Kiosks", "^Kiosk$", -1, "creation_only", true), (rule.Name, rule.Match.Catalog, rule.DurationDays, rule.Strategy, rule.ForceAtEndOfTerm));
+        Assert.Equal(14, back[SettingsResolver.DefaultPolicyDurationDays]);
+        Assert.Equal("creation_only", back[SettingsResolver.DefaultPolicyStrategy]);
+        Assert.Equal(false, back[SettingsResolver.DefaultPolicyForceAtEndOfTerm]);
+        var date = Assert.Single(Assert.IsType<List<TermDate>>(back[SettingsResolver.EndOfTermDates]));
+        Assert.Equal((4, 30), (date.Month, date.Day));
+        Assert.Null(back[SettingsResolver.InventoryPath]);
+
+        // What the headless writer hands the store encodes the same as a direct save.
+        foreach (var (name, value) in back.Where(kv => kv.Value != null))
+            Assert.Empty(ResolveEncoded(name, value!).Notes);
+    }
+
+    [Theory]
+    [InlineData("""{"Unknown": 1}""")]
+    [InlineData("""{"DefaultPolicyDurationDays": 5000}""")]
+    [InlineData("""{"DefaultPolicyStrategy": "whenever"}""")]
+    [InlineData("""{"Exclusions": ["ok", " "]}""")]
+    [InlineData("""{"Exclusions": "not a list"}""")]
+    [InlineData("""{"EndOfTermDates": [{"Month": 2, "Day": 30}]}""")]
+    [InlineData("""{"Policies": [{"Name": "x", "Match": {}, "DurationDays": 1, "Strategy": "bad"}]}""")]
+    [InlineData("""not json""")]
+    public void PayloadRejectsWhatTheEditorsWouldNotAllow(string json) =>
+        Assert.Throws<InvalidDataException>(() => SettingsPayload.Deserialize(json));
+
+    [Fact]
+    public void HeadlessWriterSkipsPolicySetKeys()
+    {
+        var policy = new DictionarySettingsSource(new Dictionary<string, object>
+        {
+            [SettingsResolver.Exclusions] = new[] { "from-policy" },
+            [SettingsResolver.DeleteAdmins] = 0
+        });
+        IReadOnlyDictionary<string, object?>? written = null;
+
+        var code = SettingsPayload.Apply(SettingsPayload.Serialize(EveryValue()), policy, values => written = values);
+
+        Assert.Equal(SettingsPayload.Saved, code);
+        Assert.NotNull(written);
+        Assert.DoesNotContain(SettingsResolver.Exclusions, written!.Keys);
+        Assert.DoesNotContain(SettingsResolver.DeleteAdmins, written.Keys);
+        Assert.Equal(SettingsResolver.AllSettingNames.Count - 2, written.Count);
+    }
+
+    [Fact]
+    public void HeadlessWriterRefusesAnInvalidOrMissingPayloadAndReportsAFailedWrite()
+    {
+        var called = false;
+        Assert.Equal(SettingsPayload.InvalidPayload,
+            SettingsPayload.Apply("""{"DefaultPolicyDurationDays": -5}""", DictionarySettingsSource.Empty, _ => called = true));
+        Assert.Equal(SettingsPayload.InvalidPayload, SettingsPayload.Apply(null, DictionarySettingsSource.Empty, _ => called = true));
+        Assert.False(called);
+
+        Assert.Equal(SettingsPayload.WriteFailed,
+            SettingsPayload.Apply("""{"DeleteAdmins": true}""", DictionarySettingsSource.Empty, _ => throw new UnauthorizedAccessException()));
     }
 
     [Fact]

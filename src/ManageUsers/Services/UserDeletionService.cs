@@ -109,7 +109,12 @@ public sealed class UserDeletionService
         return true;
     }
 
-    public void ProcessDeferredDeletions(SessionsData sessions)
+    /// <summary>
+    /// Deletes accounts an earlier run deferred because they were signed in. An account
+    /// excluded since then (by policy, machine settings, Config.yaml or Sessions.yaml) is
+    /// kept and dropped from the deferred list: exclusions win over a deferral.
+    /// </summary>
+    public void ProcessDeferredDeletions(SessionsData sessions, IReadOnlySet<string> exclusions)
     {
         if (sessions.DeferredDeletes.Count == 0)
             return;
@@ -119,6 +124,15 @@ public sealed class UserDeletionService
 
         foreach (var user in toProcess)
         {
+            if (exclusions.Contains(user))
+            {
+                _log.Info($"Deferred user {user} is now excluded — keeping it");
+                _log.Audit("DELETE_SKIPPED", $"item={user} reason=excluded since the deletion was deferred");
+                if (!_simulate)
+                    ClearDeferred(user, sessions);
+                continue;
+            }
+
             if (IsUserAtConsole(user))
             {
                 _log.Info($"Deferred user {user} still at console — skipping");

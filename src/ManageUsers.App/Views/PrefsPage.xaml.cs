@@ -24,18 +24,17 @@ public sealed partial class PrefsPage : Page
     protected override void OnNavigatedTo(NavigationEventArgs e)
     {
         base.OnNavigatedTo(e);
-        ViewModel.Load();
+        // Coming back from another tab keeps edits that are waiting for Save.
+        if (!ViewModel.HasPendingChanges)
+            ViewModel.Load();
+        _ = ViewModel.RefreshServicesAsync();
     }
 
-    private void UnlockButton_Click(object sender, RoutedEventArgs e)
-    {
-        // Once the elevated copy has started (UAC accepted), this read-only instance closes.
-        // A cancelled UAC prompt returns false and the tab simply stays read-only.
-        if (ViewModel.TryRelaunchElevated())
-            Application.Current.Exit();
-    }
+    private async void RefreshServices_Click(object sender, RoutedEventArgs e) => await ViewModel.RefreshServicesAsync();
 
-    private void ClearMachineSettings_Click(object sender, RoutedEventArgs e) => ViewModel.ClearMachineSettings();
+    private async void Save_Click(object sender, RoutedEventArgs e) => await ViewModel.SaveAsync();
+    private void Discard_Click(object sender, RoutedEventArgs e) => ViewModel.Discard();
+    private async void ClearMachineSettings_Click(object sender, RoutedEventArgs e) => await ViewModel.ClearMachineSettingsAsync();
 
     // ── List editors ─────────────────────────────────────────────
 
