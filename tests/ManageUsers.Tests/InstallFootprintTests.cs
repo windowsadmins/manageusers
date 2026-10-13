@@ -1,11 +1,22 @@
+using System.Globalization;
 using ManageUsers.Services;
 using Xunit;
 
 namespace ManageUsers.Tests;
 
 /// <summary>The Prefs tab's Services card: task state, last result and triggers in plain words.</summary>
-public sealed class InstallFootprintTests
+/// <remarks>Times follow the user's culture; these tests pin en-GB, and en-US where they say so.</remarks>
+public sealed class InstallFootprintTests : IDisposable
 {
+    private readonly CultureInfo _culture = CultureInfo.CurrentCulture;
+
+    public InstallFootprintTests() => CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo("en-GB");
+
+    public void Dispose() => CultureInfo.CurrentCulture = _culture;
+
+    /// <summary>ICU puts a narrow no-break space before AM/PM in some cultures; compare it as a space.</summary>
+    private static string Spaces(string? text) => (text ?? "").Replace('\u202F', ' ').Replace('\u00A0', ' ');
+
     private const string Ns = "http://schemas.microsoft.com/windows/2004/02/mit/task";
 
     private static string Task(string triggers, string principal = "", string actions = "") =>
@@ -42,7 +53,7 @@ public sealed class InstallFootprintTests
     [Fact]
     public void RunTimesInWords()
     {
-        Assert.Equal("Oct 12, 2026 3:00 AM", InstallFootprint.RunTimeText(new DateTime(2026, 10, 12, 3, 0, 0), "Never"));
+        Assert.Equal("12/10/2026 03:00", InstallFootprint.RunTimeText(new DateTime(2026, 10, 12, 3, 0, 0), "Never"));
         Assert.Equal("Never", InstallFootprint.RunTimeText(new DateTime(1899, 12, 30), "Never"));
         Assert.Equal("Not scheduled", InstallFootprint.RunTimeText(null, "Not scheduled"));
     }
@@ -88,7 +99,7 @@ public sealed class InstallFootprintTests
         Assert.Equal(
             [("Name", @"\WinAdmins-ManageUsers"), ("Start type", "Enabled"), ("Status", "Ready"), ("Account", "SYSTEM"),
              ("Path and arguments", "\"C:\\Program Files\\ManageUsers\\manageusers.exe\""), ("Triggers", "At startup"),
-             ("Last run", "Never"), ("Last result", "Never run"), ("Next run", "Oct 13, 2026 3:00 AM")],
+             ("Last run", "Never"), ("Last result", "Never run"), ("Next run", "13/10/2026 03:00")],
             status.Details.Select(d => (d.Label, d.Value)));
     }
 
@@ -137,7 +148,7 @@ public sealed class InstallFootprintTests
               <ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay></CalendarTrigger>
             <BootTrigger><Enabled>true</Enabled></BootTrigger>
             """);
-        Assert.Equal("Daily at 3:00 AM; At startup", InstallFootprint.TriggerText(xml));
+        Assert.Equal("Daily at 03:00; At startup", InstallFootprint.TriggerText(xml));
     }
 
     [Theory]
@@ -145,12 +156,12 @@ public sealed class InstallFootprintTests
     [InlineData(@"<LogonTrigger><UserId>DOMAIN\someone</UserId></LogonTrigger>", @"At logon of DOMAIN\someone")]
     [InlineData("<BootTrigger><Enabled>false</Enabled></BootTrigger>", "At startup (disabled)")]
     [InlineData("<CalendarTrigger><StartBoundary>2026-01-01T15:30:00</StartBoundary><ScheduleByDay><DaysInterval>3</DaysInterval></ScheduleByDay></CalendarTrigger>",
-        "Every 3 days at 3:30 PM")]
+        "Every 3 days at 15:30")]
     [InlineData("<CalendarTrigger><StartBoundary>2026-01-01T09:00:00</StartBoundary><ScheduleByWeek><WeeksInterval>1</WeeksInterval><DaysOfWeek><Monday /><Friday /></DaysOfWeek></ScheduleByWeek></CalendarTrigger>",
-        "Weekly on Monday, Friday at 9:00 AM")]
+        "Weekly on Monday, Friday at 09:00")]
     [InlineData("<CalendarTrigger><StartBoundary>2026-01-01T00:00:00</StartBoundary><ScheduleByMonth /></CalendarTrigger>",
-        "Monthly at 12:00 AM")]
-    [InlineData("<TimeTrigger><StartBoundary>2026-11-02T08:15:00</StartBoundary></TimeTrigger>", "Once on Nov 2, 2026 at 8:15 AM")]
+        "Monthly at 00:00")]
+    [InlineData("<TimeTrigger><StartBoundary>2026-11-02T08:15:00</StartBoundary></TimeTrigger>", "Once on 02/11/2026 at 08:15")]
     [InlineData("<BootTrigger><Repetition><Interval>PT4H</Interval></Repetition></BootTrigger>", "At startup, then every 4 hours")]
     [InlineData("<BootTrigger><Repetition><Interval>PT1H</Interval></Repetition></BootTrigger>", "At startup, then every hour")]
     [InlineData("<IdleTrigger />", "When the device is idle")]
@@ -176,8 +187,25 @@ public sealed class InstallFootprintTests
     public void SummaryShowsTriggerAndResult()
     {
         var ran = new DateTime(2026, 10, 12, 3, 0, 0);
-        Assert.Equal("Scheduled task · Daily at 3:00 AM · Last result 0", InstallFootprint.TaskSummary("Daily at 3:00 AM", ran, 0));
+        Assert.Equal("Scheduled task · Daily at 03:00 · Last result 0", InstallFootprint.TaskSummary("Daily at 03:00", ran, 0));
         Assert.Equal("Scheduled task · At startup · Last result 0x80070005", InstallFootprint.TaskSummary("At startup", ran, unchecked((int)0x80070005)));
         Assert.Equal("Scheduled task · At startup · Never run", InstallFootprint.TaskSummary("At startup", null, 0));
+    }
+
+    [Fact]
+    public void TimesFollowTheUsersCulture()
+    {
+        var xml = Task("""
+            <CalendarTrigger><StartBoundary>2026-01-01T15:30:00</StartBoundary>
+              <ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay></CalendarTrigger>
+            """);
+        var when = new DateTime(2026, 10, 12, 15, 30, 0);
+
+        Assert.Equal("Daily at 15:30", InstallFootprint.TriggerText(xml));
+        Assert.Equal("12/10/2026 15:30", InstallFootprint.RunTimeText(when, null));
+
+        CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo("en-US");
+        Assert.Equal("Daily at 3:30 PM", Spaces(InstallFootprint.TriggerText(xml)));
+        Assert.Equal("10/12/2026 3:30 PM", Spaces(InstallFootprint.RunTimeText(when, null)));
     }
 }

@@ -70,9 +70,12 @@ public static class InstallFootprint
         };
     }
 
-    /// <summary>A task's run time as a local date and time, or <paramref name="none"/> for the Task Scheduler's empty 1899 date.</summary>
+    /// <summary>
+    /// A task's run time as a local date and time in the user's culture (short date and time,
+    /// "g"), or <paramref name="none"/> for the Task Scheduler's empty 1899 date.
+    /// </summary>
     public static string? RunTimeText(DateTime? when, string? none) =>
-        when is { Year: >= 1900 } t ? t.ToString("MMM d, yyyy h:mm tt", CultureInfo.InvariantCulture) : none;
+        when is { Year: >= 1900 } t ? t.ToString("g", CultureInfo.CurrentCulture) : none;
 
     private static readonly Dictionary<string, string> WellKnownAccounts = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -193,7 +196,7 @@ public static class InstallFootprint
             "RegistrationTrigger" => "When the task is created or changed",
             "SessionStateChangeTrigger" => "On a session change",
             "EventTrigger" => "On an event log entry",
-            "TimeTrigger" => At(Child(trigger, "StartBoundary")) is { } once ? $"Once on {once:MMM d, yyyy} at {Clock(once)}" : "Once",
+            "TimeTrigger" => At(Child(trigger, "StartBoundary")) is { } once ? $"Once on {once.ToString("d", CultureInfo.CurrentCulture)} at {Clock(once)}" : "Once",
             "CalendarTrigger" => DescribeCalendar(trigger, Element, Child),
             _ => trigger.Name.LocalName
         };
@@ -229,7 +232,8 @@ public static class InstallFootprint
     private static DateTime? At(string? boundary) =>
         DateTime.TryParse(boundary, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var when) ? when : null;
 
-    private static string Clock(DateTime when) => when.ToString("h:mm tt", CultureInfo.InvariantCulture);
+    /// <summary>A trigger's time of day in the user's culture (short time, "t").</summary>
+    private static string Clock(DateTime when) => when.ToString("t", CultureInfo.CurrentCulture);
 
     /// <summary>An ISO 8601 duration such as PT4H or P1D in words, or null when it cannot be read.</summary>
     private static string? Duration(string? iso)
