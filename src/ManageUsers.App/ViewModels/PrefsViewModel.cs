@@ -179,7 +179,7 @@ public partial class PrefsViewModel : ObservableObject
         var rows = await Task.Run(() => InstallFootprint.Components
             .Select(c => new ServiceRow(c, c.Kind == InstallFootprint.ScheduledTask
                 ? InstallFootprint.QueryTask(c.Name)
-                : new ComponentStatus("Unknown", "Unknown", "Unknown")))
+                : InstallFootprint.UnreadableTask(c.Name)))
             .ToList());
         Services.Clear();
         foreach (var row in rows)
@@ -493,14 +493,16 @@ public partial class RuleItem(PrefsViewModel owner) : ObservableObject
     private static string? Blank(string s) => string.IsNullOrWhiteSpace(s) ? null : s.Trim();
 }
 
-/// <summary>One row of the Services card.</summary>
+/// <summary>One expander in the Services card: a header with the status, and the detail rows.</summary>
 public sealed class ServiceRow(InstalledComponent component, ComponentStatus status)
 {
     public string FriendlyName => component.FriendlyName;
-    public string Name => component.Name;
-    public string Kind => component.Kind;
-    public string Description => component.Description;
-    public string State => status.State;
-    public string LastResult => status.LastResult;
-    public string Schedule => status.Schedule;
+    public string Summary => status.Summary;
+    public string Status => status.Status;
+    public IReadOnlyList<ComponentDetail> Details => status.Details;
+
+    // The status dot: running is success, ready is attention, everything else neutral.
+    public bool IsRunning => Status == "Running";
+    public bool IsReady => Status == "Ready";
+    public bool IsNeutral => !IsRunning && !IsReady;
 }

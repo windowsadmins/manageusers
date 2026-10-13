@@ -8,8 +8,8 @@ public sealed class InstallFootprintTests
 {
     private const string Ns = "http://schemas.microsoft.com/windows/2004/02/mit/task";
 
-    private static string Task(string triggers) =>
-        $"""<?xml version="1.0" encoding="UTF-16"?><Task version="1.2" xmlns="{Ns}"><Triggers>{triggers}</Triggers></Task>""";
+    private static string Task(string triggers, string principal = "", string actions = "") =>
+        $"""<?xml version="1.0" encoding="UTF-16"?><Task version="1.2" xmlns="{Ns}"><Triggers>{triggers}</Triggers><Principals>{principal}</Principals><Actions Context="Author">{actions}</Actions></Task>""";
 
     [Fact]
     public void FootprintIsTheScheduledTaskTheDeployCheckLooksFor()
@@ -33,10 +33,92 @@ public sealed class InstallFootprintTests
     public void TaskResultInWords()
     {
         var when = new DateTime(2026, 10, 12, 3, 0, 0);
-        Assert.Equal("Succeeded, Oct 12, 2026 3:00 AM", InstallFootprint.TaskResultText(when, 0));
-        Assert.Equal("Failed (0x80070005), Oct 12, 2026 3:00 AM", InstallFootprint.TaskResultText(when, unchecked((int)0x80070005)));
-        Assert.Equal("Failed (0x00000001), Oct 12, 2026 3:00 AM", InstallFootprint.TaskResultText(when, 1));
-        Assert.Equal("Running now, Oct 12, 2026 3:00 AM", InstallFootprint.TaskResultText(when, 0x41301));
+        Assert.Equal("Succeeded", InstallFootprint.TaskResultText(when, 0));
+        Assert.Equal("Failed (0x80070005)", InstallFootprint.TaskResultText(when, unchecked((int)0x80070005)));
+        Assert.Equal("Failed (0x00000001)", InstallFootprint.TaskResultText(when, 1));
+        Assert.Equal("Running now", InstallFootprint.TaskResultText(when, 0x41301));
+    }
+
+    [Fact]
+    public void RunTimesInWords()
+    {
+        Assert.Equal("Oct 12, 2026 3:00 AM", InstallFootprint.RunTimeText(new DateTime(2026, 10, 12, 3, 0, 0), "Never"));
+        Assert.Equal("Never", InstallFootprint.RunTimeText(new DateTime(1899, 12, 30), "Never"));
+        Assert.Equal("Not scheduled", InstallFootprint.RunTimeText(null, "Not scheduled"));
+    }
+
+    [Theory]
+    [InlineData("""<Principal id="Author"><UserId>S-1-5-18</UserId><RunLevel>HighestAvailable</RunLevel></Principal>""", "SYSTEM")]
+    [InlineData(@"<Principal id=""Author""><UserId>NT AUTHORITY\SYSTEM</UserId></Principal>", "SYSTEM")]
+    [InlineData("""<Principal id="Author"><GroupId>S-1-5-32-545</GroupId></Principal>""", "Users")]
+    [InlineData(@"<Principal id=""Author""><UserId>DOMAIN\svc-run</UserId></Principal>", @"DOMAIN\svc-run")]
+    public void PrincipalAsAccount(string principal, string expected) =>
+        Assert.Equal(expected, InstallFootprint.AccountText(Task("", principal)));
+
+    [Fact]
+    public void TaskWithNoPrincipalHasNoAccountRow() =>
+        Assert.Null(InstallFootprint.AccountText(Task("")));
+
+    [Fact]
+    public void ExecActionsAsPathAndArguments()
+    {
+        var xml = Task("", actions: """
+            <Exec><Command>C:\Program Files\ManageUsers\manageusers.exe</Command><Arguments>--quiet</Arguments></Exec>
+            <Exec><Command>"C:\Tools\a b.exe"</Command></Exec>
+            <Exec><Command>cmd.exe</Command><Arguments>/c exit 0</Arguments></Exec>
+            <ComHandler><ClassId>{00000000-0000-0000-0000-000000000000}</ClassId></ComHandler>
+            """);
+        Assert.Equal(
+            "\"C:\\Program Files\\ManageUsers\\manageusers.exe\" --quiet\n\"C:\\Tools\\a b.exe\"\ncmd.exe /c exit 0",
+            InstallFootprint.ActionsText(xml));
+        Assert.Null(InstallFootprint.ActionsText(Task("")));
+    }
+
+    [Fact]
+    public void ReadableTaskHasEveryRowInOrder()
+    {
+        var xml = Task(
+            "<BootTrigger />",
+            """<Principal id="Author"><UserId>S-1-5-18</UserId></Principal>""",
+            """<Exec><Command>C:\Program Files\ManageUsers\manageusers.exe</Command></Exec>""");
+        var status = InstallFootprint.TaskDetails(@"\WinAdmins-ManageUsers", 3, true, new DateTime(1899, 12, 30), 0x41303, new DateTime(2026, 10, 13, 3, 0, 0), xml);
+
+        Assert.Equal("Ready", status.Status);
+        Assert.Equal("Scheduled task · At startup · Never run", status.Summary);
+        Assert.Equal(
+            [("Name", @"\WinAdmins-ManageUsers"), ("Start type", "Enabled"), ("Status", "Ready"), ("Account", "SYSTEM"),
+             ("Path and arguments", "\"C:\\Program Files\\ManageUsers\\manageusers.exe\""), ("Triggers", "At startup"),
+             ("Last run", "Never"), ("Last result", "Never run"), ("Next run", "Oct 13, 2026 3:00 AM")],
+            status.Details.Select(d => (d.Label, d.Value)));
+    }
+
+    [Fact]
+    public void DisabledTaskWithoutPrincipalOrActionsOmitsThoseRows()
+    {
+        var status = InstallFootprint.TaskDetails(@"\T", 1, false, new DateTime(2026, 10, 12, 3, 0, 0), 1, null, Task(""));
+
+        Assert.Equal("Disabled", status.Status);
+        Assert.Equal("Scheduled task · No trigger (runs only on demand) · Last result 0x00000001", status.Summary);
+        Assert.Equal(
+            ["Name", "Start type", "Status", "Triggers", "Last run", "Last result", "Next run"],
+            status.Details.Select(d => d.Label));
+        Assert.Equal("Disabled", status.Details[1].Value);
+        Assert.Equal("Failed (0x00000001)", status.Details.Single(d => d.Label == "Last result").Value);
+        Assert.Equal("Not scheduled", status.Details.Single(d => d.Label == "Next run").Value);
+    }
+
+    [Fact]
+    public void UnreadableTaskShowsUnknownAndMissingTaskShowsOnlyItsStatus()
+    {
+        var unreadable = InstallFootprint.UnreadableTask(@"\T");
+        Assert.Equal("Unknown", unreadable.Status);
+        Assert.Equal(9, unreadable.Details.Count);
+        Assert.Equal(("Name", @"\T"), (unreadable.Details[0].Label, unreadable.Details[0].Value));
+        Assert.All(unreadable.Details.Skip(1), d => Assert.Equal("Unknown", d.Value));
+
+        var missing = InstallFootprint.MissingTask(@"\T");
+        Assert.Equal("Not installed", missing.Status);
+        Assert.Equal([("Name", @"\T"), ("Status", "Not installed")], missing.Details.Select(d => (d.Label, d.Value)));
     }
 
     [Fact]
@@ -87,6 +169,15 @@ public sealed class InstallFootprintTests
     public void MissingTaskIsNotInstalled()
     {
         var status = InstallFootprint.QueryTask(@"\ManageUsersTests-NoSuchTask-" + Guid.NewGuid().ToString("N"));
-        Assert.Equal("Not installed", status.State);
+        Assert.Equal("Not installed", status.Status);
+    }
+
+    [Fact]
+    public void SummaryShowsTriggerAndResult()
+    {
+        var ran = new DateTime(2026, 10, 12, 3, 0, 0);
+        Assert.Equal("Scheduled task · Daily at 3:00 AM · Last result 0", InstallFootprint.TaskSummary("Daily at 3:00 AM", ran, 0));
+        Assert.Equal("Scheduled task · At startup · Last result 0x80070005", InstallFootprint.TaskSummary("At startup", ran, unchecked((int)0x80070005)));
+        Assert.Equal("Scheduled task · At startup · Never run", InstallFootprint.TaskSummary("At startup", null, 0));
     }
 }

@@ -6,10 +6,17 @@ using System.Xml.Linq;
 namespace ManageUsers.Services;
 
 /// <summary>A Windows service or scheduled task that ManageUsers' install puts on a device.</summary>
-public sealed record InstalledComponent(string FriendlyName, string Name, string Kind, string Description);
+public sealed record InstalledComponent(string FriendlyName, string Name, string Kind);
 
-/// <summary>What the device reports about an <see cref="InstalledComponent"/>, in plain words.</summary>
-public sealed record ComponentStatus(string State, string LastResult, string Schedule);
+/// <summary>One labelled value in a component's details.</summary>
+public sealed record ComponentDetail(string Label, string Value);
+
+/// <summary>
+/// What the device reports about an <see cref="InstalledComponent"/>, in plain words: its status,
+/// a one-line summary for the collapsed row, and the detail rows in display order. A row that
+/// does not apply is left out, never invented.
+/// </summary>
+public sealed record ComponentStatus(string Status, string Summary, IReadOnlyList<ComponentDetail> Details);
 
 /// <summary>
 /// ManageUsers' install footprint: the services and scheduled tasks it runs from, with
@@ -23,9 +30,16 @@ public static class InstallFootprint
 
     public static IReadOnlyList<InstalledComponent> Components { get; } =
     [
-        new("Scheduled cleanup", @"\WinAdmins-ManageUsers", ScheduledTask,
-            "Runs manageusers.exe as SYSTEM. Registered by the ManageUsersPrefs package.")
+        new("Scheduled cleanup", @"\WinAdmins-ManageUsers", ScheduledTask)
     ];
+
+    // Detail labels, in display order.
+    public const string NameLabel = "Name", StartTypeLabel = "Start type", StatusLabel = "Status", AccountLabel = "Account",
+        PathLabel = "Path and arguments", TriggersLabel = "Triggers", LastRunLabel = "Last run",
+        LastResultLabel = "Last result", NextRunLabel = "Next run";
+
+    private static readonly string[] TaskLabels =
+        [StartTypeLabel, StatusLabel, AccountLabel, PathLabel, TriggersLabel, LastRunLabel, LastResultLabel, NextRunLabel];
 
     // Task Scheduler result codes that are not failures.
     private const int TaskHasNotRun = 0x00041303;   // SCHED_S_TASK_HAS_NOT_RUN
@@ -41,21 +55,112 @@ public static class InstallFootprint
     };
 
     /// <summary>
-    /// A task's last run in words: when it ran and how it ended, or "Never run". The
-    /// Task Scheduler reports a task that has never run with a 1899 date or result 0x41303.
+    /// How a task's last run ended, or "Never run". The Task Scheduler reports a task that has
+    /// never run with a 1899 date or result 0x41303.
     /// </summary>
     public static string TaskResultText(DateTime? lastRun, int result)
     {
-        if (lastRun is not { } when || when.Year < 1900 || result == TaskHasNotRun)
+        if (RunTimeText(lastRun, null) == null || result == TaskHasNotRun)
             return "Never run";
-        var outcome = result switch
+        return result switch
         {
             0 => "Succeeded",
             TaskRunning => "Running now",
             _ => $"Failed (0x{result:X8})"
         };
-        return $"{outcome}, {when.ToString("MMM d, yyyy h:mm tt", CultureInfo.InvariantCulture)}";
     }
+
+    /// <summary>A task's run time as a local date and time, or <paramref name="none"/> for the Task Scheduler's empty 1899 date.</summary>
+    public static string? RunTimeText(DateTime? when, string? none) =>
+        when is { Year: >= 1900 } t ? t.ToString("MMM d, yyyy h:mm tt", CultureInfo.InvariantCulture) : none;
+
+    private static readonly Dictionary<string, string> WellKnownAccounts = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["S-1-5-18"] = "SYSTEM",
+        ["S-1-5-19"] = "LOCAL SERVICE",
+        ["S-1-5-20"] = "NETWORK SERVICE",
+        ["S-1-5-32-544"] = "Administrators",
+        ["S-1-5-32-545"] = "Users",
+        [@"NT AUTHORITY\SYSTEM"] = "SYSTEM"
+    };
+
+    /// <summary>The account a task runs as, from its principal's user or group, or null when it names none.</summary>
+    public static string? AccountText(string taskXml)
+    {
+        if (Parse(taskXml) is not { } root) return null;
+        var principal = Find(Find(root, "Principals"), "Principal");
+        var id = Find(principal, "UserId")?.Value.Trim() is { Length: > 0 } user ? user : Find(principal, "GroupId")?.Value.Trim();
+        if (string.IsNullOrEmpty(id)) return null;
+        return WellKnownAccounts.TryGetValue(id, out var name) ? name : id;
+    }
+
+    /// <summary>Each command a task runs, with its arguments, one per line; null when it runs none.</summary>
+    public static string? ActionsText(string taskXml)
+    {
+        if (Parse(taskXml) is not { } root) return null;
+        var lines = Find(root, "Actions")?.Elements().Where(e => e.Name.LocalName == "Exec").Select(exec =>
+        {
+            var command = Find(exec, "Command")?.Value.Trim() ?? "";
+            if (command.Contains(' ') && !command.StartsWith('"')) command = $"\"{command}\"";
+            var args = Find(exec, "Arguments")?.Value.Trim();
+            return string.IsNullOrEmpty(args) ? command : $"{command} {args}";
+        }).Where(l => l.Length > 0).ToList();
+        return lines is { Count: > 0 } ? string.Join("\n", lines) : null;
+    }
+
+    /// <summary>
+    /// The collapsed row's summary: "Scheduled task · Daily at 3:00 AM · Last result 0", or
+    /// "· Never run" in place of the result when the task has not run.
+    /// </summary>
+    public static string TaskSummary(string triggers, DateTime? lastRun, int lastResult) =>
+        $"{ScheduledTask} · {triggers} · " + (TaskResultText(lastRun, lastResult) == "Never run"
+            ? "Never run"
+            : $"Last result {(lastResult == 0 ? "0" : $"0x{lastResult:X8}")}");
+
+    /// <summary>A readable task's detail rows, in display order.</summary>
+    public static ComponentStatus TaskDetails(string path, int state, bool enabled, DateTime? lastRun, int lastResult, DateTime? nextRun, string taskXml)
+    {
+        var status = TaskStateText(state, enabled);
+        var triggers = TriggerText(taskXml);
+        var rows = new List<ComponentDetail>
+        {
+            new(NameLabel, path),
+            new(StartTypeLabel, enabled ? "Enabled" : "Disabled"),
+            new(StatusLabel, status)
+        };
+        if (AccountText(taskXml) is { } account) rows.Add(new(AccountLabel, account));
+        if (ActionsText(taskXml) is { } actions) rows.Add(new(PathLabel, actions));
+        rows.Add(new(TriggersLabel, triggers));
+        rows.Add(new(LastRunLabel, RunTimeText(lastRun, "Never")!));
+        rows.Add(new(LastResultLabel, TaskResultText(lastRun, lastResult)));
+        rows.Add(new(NextRunLabel, RunTimeText(nextRun, "Not scheduled")!));
+        return new ComponentStatus(status, TaskSummary(triggers, lastRun, lastResult), rows);
+    }
+
+    /// <summary>A task that is there but this user may not read: every row past its name is Unknown.</summary>
+    public static ComponentStatus UnreadableTask(string path) =>
+        new("Unknown", $"{ScheduledTask} · details need administrator to read",
+            [new ComponentDetail(NameLabel, path), .. TaskLabels.Select(l => new ComponentDetail(l, "Unknown"))]);
+
+    /// <summary>A task that is not on this device: its name and status only.</summary>
+    public static ComponentStatus MissingTask(string path) =>
+        new("Not installed", $"{ScheduledTask} · not on this device",
+            [new ComponentDetail(NameLabel, path), new ComponentDetail(StatusLabel, "Not installed")]);
+
+    private static XElement? Parse(string xml)
+    {
+        try
+        {
+            return XElement.Parse(xml);
+        }
+        catch (System.Xml.XmlException)
+        {
+            return null;
+        }
+    }
+
+    private static XElement? Find(XElement? parent, string name) =>
+        parent?.Elements().FirstOrDefault(e => e.Name.LocalName == name);
 
     /// <summary>A task's triggers in plain words, from its registration XML.</summary>
     public static string TriggerText(string taskXml)
@@ -146,7 +251,6 @@ public static class InstallFootprint
         return null;
     }
 
-    private const int AccessDenied = unchecked((int)0x80070005);
     private const int FileNotFound = unchecked((int)0x80070002);
 
     /// <summary>
@@ -165,23 +269,17 @@ public static class InstallFootprint
             scheduler.Connect();
             var folderPath = path.LastIndexOf('\\') is var slash and > 0 ? path[..slash] : @"\";
             dynamic task = scheduler.GetFolder(folderPath).GetTask(path);
-            var lastRun = (DateTime)task.LastRunTime;
-            return new ComponentStatus(
-                TaskStateText((int)task.State, (bool)task.Enabled),
-                TaskResultText(lastRun, (int)task.LastTaskResult),
-                TriggerText((string)task.Xml));
+            return TaskDetails(path, (int)task.State, (bool)task.Enabled, (DateTime)task.LastRunTime,
+                (int)task.LastTaskResult, (DateTime)task.NextRunTime, (string)task.Xml);
         }
         catch (Exception ex) when (ex.HResult == FileNotFound || ex is FileNotFoundException)
         {
-            return new ComponentStatus("Not installed", "—", "—");
-        }
-        catch (Exception ex) when (ex.HResult == AccessDenied || ex is UnauthorizedAccessException)
-        {
-            return new ComponentStatus("Unknown", "Unknown (needs administrator to read)", "Unknown");
+            return MissingTask(path);
         }
         catch (Exception)
         {
-            return new ComponentStatus("Unknown", "Unknown", "Unknown");
+            // Access denied without elevation, or a scheduler that would not answer.
+            return UnreadableTask(path);
         }
     }
 }
