@@ -332,8 +332,9 @@ public partial class PrefsViewModel : ObservableObject
 
     /// <summary>
     /// Writes <paramref name="values"/> to HKLM: directly when elevated, otherwise through the
-    /// app's own executable run elevated and headless on a payload file in %TEMP%. A declined
-    /// UAC prompt or a failure leaves the edits pending. True when the values were written.
+    /// app's own executable run elevated and headless, which reads them over a named pipe only
+    /// this user, Administrators and SYSTEM can open. A declined UAC prompt or a failure leaves
+    /// the edits pending. True when the values were written.
     /// </summary>
     private async Task<bool> WriteAsync(Dictionary<string, object?> values)
     {
@@ -350,21 +351,27 @@ public partial class PrefsViewModel : ObservableObject
                 if (string.IsNullOrEmpty(exe))
                     return Failed("could not find the app's own executable.");
 
-                var payload = Path.Combine(Path.GetTempPath(), $"ManageUsers-settings-{Guid.NewGuid():N}.json");
-                try
+                var pipeName = PrefsElevation.NewPipeName();
+                await using var pipe = PrefsElevation.CreatePayloadPipe(pipeName);
+                using var process = System.Diagnostics.Process.Start(PrefsElevation.BuildApplySettings(exe, pipeName));
+                if (process == null)
+                    return Failed("the settings writer did not start.");
+
+                using (var timeout = new CancellationTokenSource(PrefsElevation.ConnectTimeout))
                 {
-                    await File.WriteAllTextAsync(payload, SettingsPayload.Serialize(values));
-                    using var process = System.Diagnostics.Process.Start(PrefsElevation.BuildApplySettings(exe, payload));
-                    if (process == null)
-                        return Failed("the settings writer did not start.");
-                    await process.WaitForExitAsync();
-                    if (process.ExitCode != SettingsPayload.Saved)
-                        return Failed(SettingsPayload.ExitCodeText(process.ExitCode) + ".");
+                    var connected = pipe.WaitForConnectionAsync(timeout.Token);
+                    if (await Task.WhenAny(connected, process.WaitForExitAsync(timeout.Token)) != connected || !pipe.IsConnected)
+                    {
+                        timeout.Cancel();
+                        return Failed(process.HasExited
+                            ? SettingsPayload.ExitCodeText(process.ExitCode) + "."
+                            : "the settings writer did not connect in time.");
+                    }
+                    await PrefsElevation.SendPayloadAsync(pipe, SettingsPayload.Serialize(values), timeout.Token);
                 }
-                finally
-                {
-                    try { File.Delete(payload); } catch { }
-                }
+                await process.WaitForExitAsync();
+                if (process.ExitCode != SettingsPayload.Saved)
+                    return Failed(SettingsPayload.ExitCodeText(process.ExitCode) + ".");
             }
             SaveStatus = SaveState.Saved;
             return true;

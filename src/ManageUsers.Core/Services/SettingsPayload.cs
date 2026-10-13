@@ -5,8 +5,9 @@ using ManageUsers.Models;
 namespace ManageUsers.Services;
 
 /// <summary>
-/// The Prefs tab's pending changes as a JSON file, handed from the unelevated app to its
-/// elevated, headless copy that writes them to machine settings. Each value is checked with
+/// The Prefs tab's pending changes as JSON, handed from the unelevated app to its elevated,
+/// headless copy over a named pipe (see <see cref="PrefsElevation"/>), which writes them to
+/// machine settings. Each value is checked with
 /// the rules the app's editors apply, and a setting policy sets is never written.
 /// </summary>
 public static class SettingsPayload
@@ -113,23 +114,23 @@ public static class SettingsPayload
     }
 
     /// <summary>
-    /// The headless writer: reads the payload at <paramref name="path"/>, drops every setting
+    /// The headless writer: checks the payload <paramref name="json"/>, drops every setting
     /// <paramref name="policy"/> sets, and hands the rest to <paramref name="write"/>. Returns an
-    /// exit code from this class. The payload file is deleted either way.
+    /// exit code from this class.
     /// </summary>
-    public static int Apply(string path, ISettingsSource policy, Action<IReadOnlyDictionary<string, object?>> write)
+    public static int Apply(string? json, ISettingsSource policy, Action<IReadOnlyDictionary<string, object?>> write)
     {
+        if (json == null)
+            return InvalidPayload;
         Dictionary<string, object?> values;
         try
         {
-            values = Deserialize(File.ReadAllText(path));
+            values = Deserialize(json);
         }
-        catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
+        catch (InvalidDataException)
         {
-            TryDelete(path);
             return InvalidPayload;
         }
-        TryDelete(path);
 
         var unmanaged = values.Where(kv => policy.GetValue(kv.Key) == null)
             .ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.Ordinal);
@@ -148,13 +149,8 @@ public static class SettingsPayload
     public static string ExitCodeText(int exitCode) => exitCode switch
     {
         Saved => "Saved",
-        InvalidPayload => "the changes could not be read back, or a value was not valid",
+        InvalidPayload => "the changes did not reach the settings writer, or a value was not valid",
         WriteFailed => "the machine settings could not be written",
         _ => $"the settings writer stopped with exit code {exitCode}"
     };
-
-    private static void TryDelete(string path)
-    {
-        try { File.Delete(path); } catch { }
-    }
 }

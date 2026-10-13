@@ -148,17 +148,41 @@ public class GuiSupportTests
     }
 
     [Fact]
-    public void SaveRunsTheAppElevatedAndHeadlessOnThePayload()
+    public void SaveRunsTheAppElevatedAndHeadlessOnAPayloadPipe()
     {
-        var start = PrefsElevation.BuildApplySettings(@"C:\Program Files\ManageUsers\Managed Users Cleanup.exe", @"C:\Temp\p.json");
+        var pipe = PrefsElevation.NewPipeName();
+        var start = PrefsElevation.BuildApplySettings(@"C:\Program Files\ManageUsers\Managed Users Cleanup.exe", pipe);
         Assert.Equal("runas", start.Verb);
         Assert.True(start.UseShellExecute);
-        Assert.Equal(@"--apply-settings ""C:\Temp\p.json""", start.Arguments);
+        Assert.Equal($"--apply-settings {pipe}", start.Arguments);
+        Assert.Throws<ArgumentException>(() => PrefsElevation.BuildApplySettings("app.exe", @"C:\Temp\p.json"));
 
-        Assert.Equal(@"C:\Temp\p.json", PrefsElevation.ApplySettingsPath(["--apply-settings", @"C:\Temp\p.json"]));
-        Assert.Null(PrefsElevation.ApplySettingsPath(["--apply-settings"]));
-        Assert.Null(PrefsElevation.ApplySettingsPath([]));
+        Assert.True(PrefsElevation.IsApplySettings(["--apply-settings", pipe], out var name));
+        Assert.Equal(pipe, name);
+        Assert.True(PrefsElevation.IsApplySettings(["--apply-settings", @"\\server\pipe\other"], out name));
+        Assert.Null(name);
+        Assert.True(PrefsElevation.IsApplySettings(["--apply-settings"], out name));
+        Assert.Null(name);
+        Assert.False(PrefsElevation.IsApplySettings([], out _));
     }
+
+    [Fact]
+    public async Task PayloadTravelsOverThePipeAndNeverTouchesDisk()
+    {
+        var name = PrefsElevation.NewPipeName();
+        var json = SettingsPayload.Serialize(EveryValue());
+        await using var server = PrefsElevation.CreatePayloadPipe(name);
+
+        var reader = Task.Run(() => PrefsElevation.ReceivePayload(name, TimeSpan.FromSeconds(10)));
+        await server.WaitForConnectionAsync().WaitAsync(TimeSpan.FromSeconds(10));
+        await PrefsElevation.SendPayloadAsync(server, json, CancellationToken.None);
+
+        Assert.Equal(json, await reader.WaitAsync(TimeSpan.FromSeconds(10)));
+    }
+
+    [Fact]
+    public void WriterGivesUpWhenNoPipeIsThere() =>
+        Assert.Null(PrefsElevation.ReceivePayload(PrefsElevation.NewPipeName(), TimeSpan.FromMilliseconds(200)));
 
     private static Dictionary<string, object?> EveryValue() => new()
     {
@@ -212,10 +236,8 @@ public class GuiSupportTests
         Assert.Throws<InvalidDataException>(() => SettingsPayload.Deserialize(json));
 
     [Fact]
-    public void HeadlessWriterSkipsPolicySetKeysAndDeletesThePayload()
+    public void HeadlessWriterSkipsPolicySetKeys()
     {
-        var path = Path.Combine(Path.GetTempPath(), $"manageusers-payload-{Guid.NewGuid():N}.json");
-        File.WriteAllText(path, SettingsPayload.Serialize(EveryValue()));
         var policy = new DictionarySettingsSource(new Dictionary<string, object>
         {
             [SettingsResolver.Exclusions] = new[] { "from-policy" },
@@ -223,10 +245,9 @@ public class GuiSupportTests
         });
         IReadOnlyDictionary<string, object?>? written = null;
 
-        var code = SettingsPayload.Apply(path, policy, values => written = values);
+        var code = SettingsPayload.Apply(SettingsPayload.Serialize(EveryValue()), policy, values => written = values);
 
         Assert.Equal(SettingsPayload.Saved, code);
-        Assert.False(File.Exists(path));
         Assert.NotNull(written);
         Assert.DoesNotContain(SettingsResolver.Exclusions, written!.Keys);
         Assert.DoesNotContain(SettingsResolver.DeleteAdmins, written.Keys);
@@ -234,18 +255,16 @@ public class GuiSupportTests
     }
 
     [Fact]
-    public void HeadlessWriterRefusesAnInvalidPayloadAndReportsAFailedWrite()
+    public void HeadlessWriterRefusesAnInvalidOrMissingPayloadAndReportsAFailedWrite()
     {
-        var path = Path.Combine(Path.GetTempPath(), $"manageusers-payload-{Guid.NewGuid():N}.json");
-        File.WriteAllText(path, """{"DefaultPolicyDurationDays": -5}""");
         var called = false;
-        Assert.Equal(SettingsPayload.InvalidPayload, SettingsPayload.Apply(path, DictionarySettingsSource.Empty, _ => called = true));
+        Assert.Equal(SettingsPayload.InvalidPayload,
+            SettingsPayload.Apply("""{"DefaultPolicyDurationDays": -5}""", DictionarySettingsSource.Empty, _ => called = true));
+        Assert.Equal(SettingsPayload.InvalidPayload, SettingsPayload.Apply(null, DictionarySettingsSource.Empty, _ => called = true));
         Assert.False(called);
-        Assert.False(File.Exists(path));
 
-        File.WriteAllText(path, """{"DeleteAdmins": true}""");
         Assert.Equal(SettingsPayload.WriteFailed,
-            SettingsPayload.Apply(path, DictionarySettingsSource.Empty, _ => throw new UnauthorizedAccessException()));
+            SettingsPayload.Apply("""{"DeleteAdmins": true}""", DictionarySettingsSource.Empty, _ => throw new UnauthorizedAccessException()));
     }
 
     [Fact]
