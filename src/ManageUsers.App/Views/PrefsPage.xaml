@@ -64,55 +64,41 @@
                            HorizontalAlignment="Center" />
             </StackPanel>
 
-            <!-- ═══ Read-only banner: settings live in HKLM, so editing needs elevation ═══ -->
-            <Border Style="{StaticResource CardStyle}" Padding="16,12"
-                    Visibility="{x:Bind ViewModel.IsReadOnly, Mode=OneWay, Converter={StaticResource BoolToVisibility}}">
-                <StackPanel Spacing="6">
-                    <Grid ColumnSpacing="12">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="Auto" />
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="Auto" />
-                        </Grid.ColumnDefinitions>
-                        <FontIcon Grid.Column="0" Glyph="&#xE72E;" FontSize="16" VerticalAlignment="Center"
-                                  Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                        <TextBlock Grid.Column="1" VerticalAlignment="Center" TextWrapping="WrapWholeWords"
-                                   Text="Settings are read-only. Unlock to change them (requires administrator)." />
-                        <Button Grid.Column="2" x:Name="UnlockButton" Click="UnlockButton_Click"
-                                ToolTipService.ToolTip="Relaunch as administrator to edit settings">
-                            <StackPanel Orientation="Horizontal" Spacing="6">
-                                <FontIcon Glyph="&#xEA18;" FontSize="14" />
-                                <TextBlock Text="Unlock" />
-                            </StackPanel>
-                        </Button>
-                    </Grid>
-                    <TextBlock Text="{x:Bind ViewModel.UnlockError, Mode=OneWay}"
-                               Style="{StaticResource CaptionTextBlockStyle}"
-                               Foreground="{ThemeResource SystemFillColorCriticalBrush}"
-                               TextWrapping="Wrap"
-                               Visibility="{x:Bind ViewModel.HasUnlockError, Mode=OneWay, Converter={StaticResource BoolToVisibility}}" />
-                </StackPanel>
-            </Border>
+            <!-- ═══ Policy banner: settings policy sets are disabled and gray ═══ -->
+            <StackPanel Orientation="Horizontal" Spacing="6"
+                        Visibility="{x:Bind ViewModel.HasPolicySettings, Mode=OneWay, Converter={StaticResource BoolToVisibility}}">
+                <FontIcon Glyph="&#xE72E;" FontSize="12" VerticalAlignment="Center"
+                          Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                <TextBlock Text="Settings shown in gray have been configured by a policy."
+                           Style="{StaticResource CaptionTextBlockStyle}" VerticalAlignment="Center"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+            </StackPanel>
 
-            <Grid ColumnSpacing="12"
-                  Visibility="{x:Bind ViewModel.IsElevated, Mode=OneWay, Converter={StaticResource BoolToVisibility}}">
+            <!-- ═══ Save row: edits wait here; Save asks for administrator approval when needed ═══ -->
+            <Grid ColumnSpacing="12">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
-                <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
-                    <FontIcon Glyph="&#xEA18;" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                    <TextBlock Text="Running as administrator. Changes save to this device's machine settings, above Config.yaml and below policy."
-                               Style="{StaticResource CaptionTextBlockStyle}" TextWrapping="WrapWholeWords"
-                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                </StackPanel>
+                <TextBlock Text="Changes save to this device's machine settings, above Config.yaml and below policy. Saving asks for administrator approval."
+                           Style="{StaticResource CaptionTextBlockStyle}" TextWrapping="WrapWholeWords" VerticalAlignment="Center"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                 <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center"
                             Visibility="{x:Bind ViewModel.IsSaveStatusVisible, Mode=OneWay, Converter={StaticResource BoolToVisibility}}">
                     <FontIcon Glyph="{x:Bind ViewModel.SaveStatusGlyph, Mode=OneWay}" FontSize="12" />
-                    <TextBlock Text="{x:Bind ViewModel.SaveStatusMessage, Mode=OneWay}" Style="{StaticResource CaptionTextBlockStyle}" />
+                    <TextBlock Text="{x:Bind ViewModel.SaveStatusMessage, Mode=OneWay}" Style="{StaticResource CaptionTextBlockStyle}"
+                               TextWrapping="WrapWholeWords" MaxWidth="360" />
                 </StackPanel>
-                <Button Grid.Column="2" Content="Clear device settings" Click="ClearMachineSettings_Click"
+                <Button Grid.Column="2" Content="Discard" Click="Discard_Click"
+                        Visibility="{x:Bind ViewModel.HasPendingChanges, Mode=OneWay, Converter={StaticResource BoolToVisibility}}"
+                        ToolTipService.ToolTip="Drop the changes not yet saved" />
+                <Button Grid.Column="3" Content="Save" Click="Save_Click" Style="{StaticResource AccentButtonStyle}"
+                        Visibility="{x:Bind ViewModel.HasPendingChanges, Mode=OneWay, Converter={StaticResource BoolToVisibility}}"
+                        ToolTipService.ToolTip="Save to this device's machine settings (asks for administrator approval)" />
+                <Button Grid.Column="4" Content="Clear device settings" Click="ClearMachineSettings_Click"
                         IsEnabled="{x:Bind ViewModel.HasMachineSettings, Mode=OneWay}"
                         ToolTipService.ToolTip="Remove every setting saved on this device, so Config.yaml and the defaults apply again" />
             </Grid>
@@ -158,7 +144,8 @@
                         <Button Grid.Column="1" Content="Add" Click="AddExclusion_Click" AutomationProperties.Name="Add never-delete account"
                                 IsEnabled="{x:Bind ViewModel.CanEditExclusions, Mode=OneWay}" />
                     </Grid>
-                    <TextBlock Text="{x:Bind ViewModel.ExclusionsSource, Mode=OneWay}" Style="{StaticResource SourceTextStyle}" />
+                    <TextBlock Text="{x:Bind ViewModel.ExclusionsSource, Mode=OneWay}" Style="{StaticResource SourceTextStyle}"
+                               Visibility="{x:Bind ViewModel.ExclusionsSource, Mode=OneWay, Converter={StaticResource StringToVisibility}}" />
                 </StackPanel>
                 </Border>
 
@@ -173,7 +160,8 @@
                     <ToggleSwitch OnContent="Local administrators can be deleted" OffContent="Local administrators are never deleted"
                                   IsOn="{x:Bind ViewModel.DeleteAdmins, Mode=TwoWay}"
                                   IsEnabled="{x:Bind ViewModel.CanEditDeleteAdmins, Mode=OneWay}" />
-                    <TextBlock Text="{x:Bind ViewModel.DeleteAdminsSource, Mode=OneWay}" Style="{StaticResource SourceTextStyle}" />
+                    <TextBlock Text="{x:Bind ViewModel.DeleteAdminsSource, Mode=OneWay}" Style="{StaticResource SourceTextStyle}"
+                               Visibility="{x:Bind ViewModel.DeleteAdminsSource, Mode=OneWay, Converter={StaticResource StringToVisibility}}" />
 
                     <TextBlock Text="Administrators that can still be deleted while the guard is on" Style="{StaticResource CaptionTextBlockStyle}" Margin="0,8,0,0" />
                     <ListView ItemsSource="{x:Bind ViewModel.DeletableAdmins}" Tag="DeletableAdmins"
@@ -191,7 +179,8 @@
                         <Button Grid.Column="1" Content="Add" Click="AddDeletableAdmin_Click" AutomationProperties.Name="Add deletable administrator"
                                 IsEnabled="{x:Bind ViewModel.CanEditDeletableAdmins, Mode=OneWay}" />
                     </Grid>
-                    <TextBlock Text="{x:Bind ViewModel.DeletableAdminsSource, Mode=OneWay}" Style="{StaticResource SourceTextStyle}" />
+                    <TextBlock Text="{x:Bind ViewModel.DeletableAdminsSource, Mode=OneWay}" Style="{StaticResource SourceTextStyle}"
+                               Visibility="{x:Bind ViewModel.DeletableAdminsSource, Mode=OneWay, Converter={StaticResource StringToVisibility}}" />
                 </StackPanel>
                 </Border>
 
@@ -212,7 +201,8 @@
                         <TextBlock Text="days (-1 never deletes)" VerticalAlignment="Center"
                                    Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                     </StackPanel>
-                    <TextBlock Text="{x:Bind ViewModel.DefaultDurationSource, Mode=OneWay}" Style="{StaticResource SourceTextStyle}" />
+                    <TextBlock Text="{x:Bind ViewModel.DefaultDurationSource, Mode=OneWay}" Style="{StaticResource SourceTextStyle}"
+                               Visibility="{x:Bind ViewModel.DefaultDurationSource, Mode=OneWay, Converter={StaticResource StringToVisibility}}" />
 
                     <TextBlock Text="Counting from" Style="{StaticResource CaptionTextBlockStyle}" Margin="0,4,0,0" />
                     <ComboBox SelectedIndex="{x:Bind ViewModel.DefaultStrategyIndex, Mode=TwoWay}" MinWidth="260"
@@ -220,18 +210,21 @@
                         <ComboBoxItem Content="Last login and account creation" />
                         <ComboBoxItem Content="Account creation only" />
                     </ComboBox>
-                    <TextBlock Text="{x:Bind ViewModel.DefaultStrategySource, Mode=OneWay}" Style="{StaticResource SourceTextStyle}" />
+                    <TextBlock Text="{x:Bind ViewModel.DefaultStrategySource, Mode=OneWay}" Style="{StaticResource SourceTextStyle}"
+                               Visibility="{x:Bind ViewModel.DefaultStrategySource, Mode=OneWay, Converter={StaticResource StringToVisibility}}" />
 
                     <ToggleSwitch Margin="0,4,0,0" OnContent="Delete every account at end of term" OffContent="Delete every account at end of term"
                                   IsOn="{x:Bind ViewModel.DefaultForceAtEndOfTerm, Mode=TwoWay}"
                                   IsEnabled="{x:Bind ViewModel.CanEditDefaultForce, Mode=OneWay}" />
-                    <TextBlock Text="{x:Bind ViewModel.DefaultForceSource, Mode=OneWay}" Style="{StaticResource SourceTextStyle}" />
+                    <TextBlock Text="{x:Bind ViewModel.DefaultForceSource, Mode=OneWay}" Style="{StaticResource SourceTextStyle}"
+                               Visibility="{x:Bind ViewModel.DefaultForceSource, Mode=OneWay, Converter={StaticResource StringToVisibility}}" />
 
                     <TextBlock Text="Inventory file" Style="{StaticResource CaptionTextBlockStyle}" Margin="0,8,0,0" />
                     <TextBox Text="{x:Bind ViewModel.InventoryPath, Mode=TwoWay}"
                              PlaceholderText="C:\ProgramData\Management\Inventory.yaml"
                              IsEnabled="{x:Bind ViewModel.CanEditInventoryPath, Mode=OneWay}" />
-                    <TextBlock Text="{x:Bind ViewModel.InventoryPathSource, Mode=OneWay}" Style="{StaticResource SourceTextStyle}" />
+                    <TextBlock Text="{x:Bind ViewModel.InventoryPathSource, Mode=OneWay}" Style="{StaticResource SourceTextStyle}"
+                               Visibility="{x:Bind ViewModel.InventoryPathSource, Mode=OneWay, Converter={StaticResource StringToVisibility}}" />
                 </StackPanel>
                 </Border>
 
@@ -265,7 +258,8 @@
                                Style="{StaticResource CaptionTextBlockStyle}"
                                Foreground="{ThemeResource SystemFillColorCriticalBrush}"
                                Visibility="{x:Bind ViewModel.HasTermDateError, Mode=OneWay, Converter={StaticResource BoolToVisibility}}" />
-                    <TextBlock Text="{x:Bind ViewModel.EndOfTermDatesSource, Mode=OneWay}" Style="{StaticResource SourceTextStyle}" />
+                    <TextBlock Text="{x:Bind ViewModel.EndOfTermDatesSource, Mode=OneWay}" Style="{StaticResource SourceTextStyle}"
+                               Visibility="{x:Bind ViewModel.EndOfTermDatesSource, Mode=OneWay, Converter={StaticResource StringToVisibility}}" />
                 </StackPanel>
                 </Border>
 
@@ -359,10 +353,67 @@
                                Style="{StaticResource CaptionTextBlockStyle}"
                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                Visibility="{x:Bind ViewModel.HasNoRules, Mode=OneWay, Converter={StaticResource BoolToVisibility}}" />
-                    <TextBlock Text="{x:Bind ViewModel.PoliciesSource, Mode=OneWay}" Style="{StaticResource SourceTextStyle}" />
+                    <TextBlock Text="{x:Bind ViewModel.PoliciesSource, Mode=OneWay}" Style="{StaticResource SourceTextStyle}"
+                               Visibility="{x:Bind ViewModel.PoliciesSource, Mode=OneWay, Converter={StaticResource StringToVisibility}}" />
                 </StackPanel>
                 </Border>
             </Grid>
+
+            <!-- ═══ Services Card: the scheduled tasks and services ManageUsers runs from, read-only ═══ -->
+            <Border Style="{StaticResource CardStyle}">
+            <StackPanel Spacing="8">
+                <Grid>
+                    <StackPanel Orientation="Horizontal" Spacing="10" Margin="0,0,0,4">
+                        <FontIcon Glyph="&#xE912;" FontSize="20"
+                                  Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" VerticalAlignment="Center" />
+                        <TextBlock Text="Services" Style="{StaticResource SubtitleTextBlockStyle}" VerticalAlignment="Center" />
+                    </StackPanel>
+                    <Button HorizontalAlignment="Right" Click="RefreshServices_Click" Padding="6"
+                            ToolTipService.ToolTip="Refresh" AutomationProperties.Name="Refresh services">
+                        <FontIcon Glyph="&#xE72C;" FontSize="12" />
+                    </Button>
+                </Grid>
+                <TextBlock Text="What ManageUsers runs from on this device. It installs no Windows service."
+                           Style="{StaticResource CaptionTextBlockStyle}" TextWrapping="WrapWholeWords"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+
+                <ItemsControl ItemsSource="{x:Bind ViewModel.Services}">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate x:DataType="vm:ServiceRow">
+                            <Grid ColumnSpacing="16" Padding="0,8">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="2*" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="1.5*" />
+                                    <ColumnDefinition Width="1.5*" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Grid.Column="0" Spacing="2">
+                                    <TextBlock Text="{x:Bind FriendlyName}" Style="{StaticResource BodyStrongTextBlockStyle}" />
+                                    <TextBlock Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                               TextWrapping="WrapWholeWords">
+                                        <Run Text="{x:Bind Kind}" /><Run Text=" · " /><Run Text="{x:Bind Name}" />
+                                    </TextBlock>
+                                    <TextBlock Text="{x:Bind Description}" Style="{StaticResource CaptionTextBlockStyle}"
+                                               Foreground="{ThemeResource TextFillColorTertiaryBrush}" TextWrapping="WrapWholeWords" />
+                                </StackPanel>
+                                <StackPanel Grid.Column="1" Spacing="2">
+                                    <TextBlock Text="State" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                    <TextBlock Text="{x:Bind State}" TextWrapping="WrapWholeWords" />
+                                </StackPanel>
+                                <StackPanel Grid.Column="2" Spacing="2">
+                                    <TextBlock Text="Last result" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                    <TextBlock Text="{x:Bind LastResult}" TextWrapping="WrapWholeWords" />
+                                </StackPanel>
+                                <StackPanel Grid.Column="3" Spacing="2">
+                                    <TextBlock Text="Runs" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                    <TextBlock Text="{x:Bind Schedule}" TextWrapping="WrapWholeWords" />
+                                </StackPanel>
+                            </Grid>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </StackPanel>
+            </Border>
 
         </StackPanel>
     </ScrollViewer>

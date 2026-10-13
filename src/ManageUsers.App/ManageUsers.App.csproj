@@ -23,6 +23,8 @@
     <EnableCoreMrtTooling>false</EnableCoreMrtTooling>
     <!-- Field-based [ObservableProperty]: the partial-property form fails with the WinUI XAML compiler. -->
     <NoWarn>$(NoWarn);MVVMTK0045</NoWarn>
+    <!-- Program.cs is the entry point, so Save's elevated headless writer starts no WinUI. -->
+    <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
   </PropertyGroup>
 
   <PropertyGroup>

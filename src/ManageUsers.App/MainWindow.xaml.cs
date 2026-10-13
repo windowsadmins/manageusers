@@ -2,7 +2,6 @@ using System.Runtime.InteropServices;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
-using ManageUsers.Services;
 using ManageUsers.App.Views;
 
 namespace ManageUsers.App;
@@ -42,11 +41,7 @@ public sealed partial class MainWindow : Window
 
         SystemBackdrop = new MicaBackdrop();
 
-        // The elevated relaunch from Unlock passes --prefs. Prefs is also the first tab,
-        // so it is the default either way.
-        NavView.SelectedItem = PrefsElevation.OpensOnPrefs(Environment.GetCommandLineArgs().Skip(1))
-            ? NavView.MenuItems.OfType<NavigationViewItem>().First(i => (string?)i.Tag == "prefs")
-            : NavView.MenuItems[0];
+        NavView.SelectedItem = NavView.MenuItems[0];
     }
 
     private void NavView_SelectionChanged(NavigationView sender, NavigationViewSelectionChangedEventArgs args)
